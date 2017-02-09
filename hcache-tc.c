@@ -21,8 +21,6 @@
 
 #include "config.h"
 
-#ifdef HAVE_TC
-
 #include "hcache-backend.h"
 #include "mutt.h"
 #include <tcbdb.h>
@@ -63,7 +61,7 @@ hcache_tokyocabinet_fetch(void *ctx, const char *key, size_t keylen)
 static void
 hcache_tokyocabinet_free(void *ctx, void **data)
 {
-    FREE(data);
+    FREE(data); /* __FREE_CHECKED__ */
 }
 
 static int
@@ -111,4 +109,3 @@ hcache_tokyocabinet_backend(void)
 
 HCACHE_BACKEND_OPS(tokyocabinet)
 
-#endif /* HAVE_TC */

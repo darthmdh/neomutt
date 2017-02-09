@@ -85,6 +85,8 @@ static char **nm_tags;
 #endif
 
 
+extern char **envlist;
+
 static void toggle_quadoption (int opt)
 {
   int n = opt/4;
@@ -727,6 +729,59 @@ static int parse_ifdef (BUFFER *tmp, BUFFER *s, unsigned long data, BUFFER *err)
                 return rc;
   }
   return 0;
+}
+
+static void free_mbchar_table (mbchar_table **t)
+{
+  if (!t || !*t)
+    return;
+
+  FREE (&(*t)->chars);
+  FREE (&(*t)->segmented_str);
+  FREE (&(*t)->orig_str);
+  FREE (t);		/* __FREE_CHECKED__ */
+}
+
+static mbchar_table *parse_mbchar_table (const char *s)
+{
+  mbchar_table *t;
+  size_t slen, k;
+  mbstate_t mbstate;
+  char *d;
+
+  t = safe_calloc (1, sizeof (mbchar_table));
+  slen = mutt_strlen (s);
+  if (!slen)
+    return t;
+
+  t->orig_str = safe_strdup (s);
+  /* This could be more space efficient.  However, being used on tiny
+   * strings (Tochars and StChars), the overhead is not great. */
+  t->chars = safe_calloc (slen, sizeof (char *));
+  d = t->segmented_str = safe_calloc (slen * 2, sizeof (char));
+
+  memset (&mbstate, 0, sizeof (mbstate));
+  while (slen && (k = mbrtowc (NULL, s, slen, &mbstate)))
+  {
+    if (k == (size_t)(-1) || k == (size_t)(-2))
+    {
+      dprint (1, (debugfile,
+                  "parse_mbchar_table: mbrtowc returned %d converting %s in %s\n",
+                  (k == (size_t)(-1)) ? -1 : -2,
+                  s, t->orig_str));
+      if (k == (size_t)(-1))
+        memset (&mbstate, 0, sizeof (mbstate));
+      k = (k == (size_t)(-1)) ? 1 : slen;
+    }
+
+    slen -= k;
+    t->chars[t->len++] = d;
+    while (k--)
+      *d++ = *s++;
+    *d++ = '\0';
+  }
+
+  return t;
 }
 
 static int parse_unignore (BUFFER *buf, BUFFER *s, unsigned long data, BUFFER *err)
@@ -1661,6 +1716,10 @@ static void mutt_restore_default (struct option_t *p)
     case DT_STR:
       mutt_str_replace ((char **) p->data, (char *) p->init); 
       break;
+    case DT_MBCHARTBL:
+      free_mbchar_table ((mbchar_table **)p->data);
+      *((mbchar_table **) p->data) = parse_mbchar_table ((char *) p->init);
+      break;
     case DT_PATH:
       FREE((char **) p->data);		/* __FREE_CHECKED__ */
       if (p->init)
@@ -1830,6 +1889,133 @@ static int check_charset (struct option_t *opt, const char *val)
   return rc;
 }
 
+static int parse_setenv(BUFFER *tmp, BUFFER *s, unsigned long data, BUFFER *err)
+{
+  int query, unset, len;
+  char work[LONG_STRING];
+  char **save, **envp = envlist;
+  int count = 0;
+
+  query = 0;
+  unset = data & MUTT_SET_UNSET;
+
+  if (!MoreArgs (s))
+  {
+    strfcpy (err->data, _("too few arguments"), err->dsize);
+    return -1;
+  }
+
+  if (*s->dptr == '?')
+  {
+    query = 1;
+    s->dptr++;
+  }
+
+  /* get variable name */
+  mutt_extract_token (tmp, s, MUTT_TOKEN_EQUAL);
+  len = strlen (tmp->data);
+
+  if (query)
+  {
+    int found = 0;
+    while (envp && *envp)
+    {
+      if (!mutt_strncmp (tmp->data, *envp, len))
+      {
+        if (!found)
+        {
+          mutt_endwin (NULL);
+          found = 1;
+        }
+        puts (*envp);
+      }
+      envp++;
+    }
+
+    if (found)
+    {
+      set_option (OPTFORCEREDRAWINDEX);
+      set_option (OPTFORCEREDRAWPAGER);
+      mutt_any_key_to_continue (NULL);
+      return 0;
+    }
+
+    snprintf (err->data, err->dsize, _("%s is unset"), tmp->data);
+    return -1;
+  }
+
+  if (unset)
+  {
+    count = 0;
+    while (envp && *envp)
+    {
+      if (!mutt_strncmp (tmp->data, *envp, len) && (*envp)[len] == '=')
+      {
+        /* shuffle down */
+        save = envp++;
+        while (*envp)
+        {
+          *save++ = *envp++;
+          count++;
+        }
+        *save = NULL;
+        safe_realloc (&envlist, sizeof(char *) * (count+1));
+        return 0;
+      }
+      envp++;
+      count++;
+    }
+    return -1;
+  }
+
+  if (*s->dptr == '=')
+  {
+    s->dptr++;
+    SKIPWS (s->dptr);
+  }
+
+  if (!MoreArgs (s))
+  {
+    strfcpy (err->data, _("too few arguments"), err->dsize);
+    return -1;
+  }
+
+  /* Look for current slot to overwrite */
+  count = 0;
+  while (envp && *envp)
+  {
+    if (!mutt_strncmp (tmp->data, *envp, len) && (*envp)[len] == '=')
+    {
+      FREE (envp);     /* __FREE_CHECKED__ */
+      break;
+    }
+    envp++;
+    count++;
+  }
+
+  /* Format var=value string */
+  strfcpy (work, tmp->data, sizeof(work));
+  len = strlen (work);
+  work[len++] = '=';
+  mutt_extract_token (tmp, s, 0);
+  strfcpy (&work[len], tmp->data, sizeof(work)-len);
+
+  /* If slot found, overwrite */
+  if (*envp)
+    *envp = safe_strdup (work);
+
+  /* If not found, add new slot */
+  else
+  {
+    *envp = safe_strdup (work);
+    count++;
+    safe_realloc (&envlist, sizeof(char *) * (count + 1));
+    envlist[count] = NULL;
+  }
+
+  return 0;
+}
+
 static int parse_set (BUFFER *tmp, BUFFER *s, unsigned long data, BUFFER *err)
 {
   int query, unset, inv, reset, r = 0;
@@ -1961,7 +2147,8 @@ static int parse_set (BUFFER *tmp, BUFFER *s, unsigned long data, BUFFER *err)
     }
     else if (myvar || DTYPE (MuttVars[idx].type) == DT_STR ||
 	     DTYPE (MuttVars[idx].type) == DT_PATH ||
-	     DTYPE (MuttVars[idx].type) == DT_ADDR)
+	     DTYPE (MuttVars[idx].type) == DT_ADDR ||
+	     DTYPE (MuttVars[idx].type) == DT_MBCHARTBL)
     {
       if (unset)
       {
@@ -1970,6 +2157,8 @@ static int parse_set (BUFFER *tmp, BUFFER *s, unsigned long data, BUFFER *err)
           myvar_del (myvar);
 	else if (DTYPE (MuttVars[idx].type) == DT_ADDR)
 	  rfc822_free_address ((ADDRESS **) MuttVars[idx].data);
+	else if (DTYPE (MuttVars[idx].type) == DT_MBCHARTBL)
+          free_mbchar_table ((mbchar_table **) MuttVars[idx].data);
 	else
 	  /* MuttVars[idx].data is already 'char**' (or some 'void**') or... 
 	   * so cast to 'void*' is okay */
@@ -2006,6 +2195,11 @@ static int parse_set (BUFFER *tmp, BUFFER *s, unsigned long data, BUFFER *err)
 	  mutt_pretty_mailbox (_tmp, sizeof (_tmp));
 	  val = _tmp;
 	}
+	else if (DTYPE (MuttVars[idx].type) == DT_MBCHARTBL)
+        {
+          mbchar_table *mbt = (*((mbchar_table **) MuttVars[idx].data));
+          val = mbt ? NONULL (mbt->orig_str) : "";
+        }
 	else
 	  val = *((char **) MuttVars[idx].data);
 	
@@ -2060,6 +2254,11 @@ static int parse_set (BUFFER *tmp, BUFFER *s, unsigned long data, BUFFER *err)
 	  if (mutt_strcmp (MuttVars[idx].option, "charset") == 0)
 	    mutt_set_charset (Charset);
         }
+        else if (DTYPE (MuttVars[idx].type) == DT_MBCHARTBL)
+        {
+          free_mbchar_table ((mbchar_table **) MuttVars[idx].data);
+          *((mbchar_table **) MuttVars[idx].data) = parse_mbchar_table (tmp->data);
+        }
         else
         {
 	  rfc822_free_address ((ADDRESS **) MuttVars[idx].data);
@@ -2111,7 +2310,7 @@ static int parse_set (BUFFER *tmp, BUFFER *s, unsigned long data, BUFFER *err)
 	  }
 	}
 	  
-	rx = (regex_t *) safe_malloc (sizeof (regex_t));
+	rx = safe_malloc (sizeof (regex_t));
 	if ((e = REGCOMP (rx, p, flags)) != 0)
 	{
 	  regerror (e, rx, err->data, err->dsize);
@@ -2365,7 +2564,7 @@ static int parse_set (BUFFER *tmp, BUFFER *s, unsigned long data, BUFFER *err)
       mutt_extract_token (tmp, s, 0);
       if (mutt_hcache_is_valid_backend(tmp->data))
       {
-          FREE ((void *)MuttVars[idx].data);
+          FREE ((void *)MuttVars[idx].data); /* __FREE_CHECKED__ */
           *(char **)(MuttVars[idx].data) = safe_strdup(tmp->data);
       }
       else
@@ -2408,23 +2607,94 @@ static int parse_set (BUFFER *tmp, BUFFER *s, unsigned long data, BUFFER *err)
   return (r);
 }
 
+/* Heap structure
+ * FILO designed to contain the list of config files that have been sourced
+ * and avoid cyclic sourcing */
+static HEAP *MuttrcHeap;
+
+/* Use POSIX functions to convert a path to absolute, relatively to another path
+ * Args:
+ *  - path: instance containing the relative path to the file we want the absolute
+ *     path of. Should be at least of PATH_MAX length, will contain the full result.
+ *  - reference: path to a file which directory will be set as reference for setting
+ *      up the absolute path.
+ * Returns: true (1) on success, false (0) otherwise.
+ */
+static int to_absolute_path(char *path, const char *reference)
+{
+  char *ref_tmp, *dirpath;
+  char abs_path[PATH_MAX];
+  int path_len;
+
+  /* if path is already absolute, don't do anything */
+  if ((strlen(path) > 1) && (path[0] == '/'))
+  {
+    return true;
+  }
+
+  ref_tmp = safe_strdup(reference);
+  dirpath = dirname(ref_tmp); // get directory name of
+  strncpy(abs_path, dirpath, PATH_MAX);
+  safe_strncat(abs_path, sizeof(abs_path), "/", 1); // append a / at the end of the path
+
+  FREE(&ref_tmp);
+  path_len = PATH_MAX - strlen(path);
+
+  safe_strncat(abs_path, sizeof(abs_path), path, path_len > 0 ? path_len : 0);
+
+  path = realpath(abs_path, path);
+
+  if (!path)
+  {
+    printf("Error: issue converting path to absolute (%s)", strerror(errno));
+    return false;
+  }
+
+  return true;
+}
+
 #define MAXERRS 128
 
 /* reads the specified initialization file.  returns -1 if errors were found
    so that we can pause to let the user know...  */
-static int source_rc (const char *rcfile, BUFFER *err)
+static int source_rc (const char *rcfile_path, BUFFER *err)
 {
   FILE *f;
   int line = 0, rc = 0, conv = 0, line_rc;
   BUFFER token;
   char *linebuf = NULL;
   char *currentline = NULL;
+  char rcfile[PATH_MAX];
   size_t buflen;
+  size_t rcfilelen;
+
   pid_t pid;
 
-  dprint (2, (debugfile, "Reading configuration file '%s'.\n",
-	  rcfile));
-  
+  strncpy(rcfile, rcfile_path, PATH_MAX);
+
+  rcfilelen = mutt_strlen(rcfile);
+
+  if (rcfile[rcfilelen-1] != '|')
+  {
+      if (!to_absolute_path(rcfile, mutt_front_heap(MuttrcHeap)))
+      {
+        mutt_error("Error: impossible to build path of '%s'.", rcfile_path);
+        return (-1);
+      }
+
+      if (!MuttrcHeap || mutt_find_heap(MuttrcHeap, rcfile) == NULL)
+      {
+        mutt_push_heap(&MuttrcHeap, rcfile);
+      }
+      else
+      {
+        mutt_error("Error: Cyclic sourcing of configuration file '%s'.", rcfile);
+        return (-1);
+      }
+  }
+
+  dprint(2, (debugfile, "Reading configuration file '%s'.\n", rcfile));
+
   if ((f = mutt_open_read (rcfile, &pid)) == NULL)
   {
     snprintf (err->data, err->dsize, "%s: %s", rcfile, strerror (errno));
@@ -2473,6 +2743,9 @@ static int source_rc (const char *rcfile, BUFFER *err)
       : _("source: reading aborted due to too many errors in %s"), rcfile);
     rc = -1;
   }
+
+  mutt_pop_heap(&MuttrcHeap);
+
   return (rc);
 }
 
@@ -2494,7 +2767,7 @@ static int parse_source (BUFFER *tmp, BUFFER *s, unsigned long data, BUFFER *err
   }
   strfcpy (path, tmp->data, sizeof (path));
   mutt_expand_path (path, sizeof (path));
-  return (source_rc (path, err));
+  return source_rc (path, err);
 }
 
 /* line		command to execute
@@ -2828,7 +3101,7 @@ static int complete_all_nm_tags (const char *pt)
   memset (Matches, 0, Matches_listsize);
   memset (Completed, 0, sizeof (Completed));
 
-  nm_longrun_init(Context, FALSE);
+  nm_longrun_init(Context, false);
 
   /* Work out how many tags there are. */
   if (nm_get_all_tags(Context, NULL, &tag_count_1) || tag_count_1 == 0)
@@ -2999,6 +3272,11 @@ static int var_to_string (int idx, char* val, size_t len)
     if (DTYPE (MuttVars[idx].type) == DT_PATH)
       mutt_pretty_mailbox (tmp, sizeof (tmp));
   }
+  else if (DTYPE (MuttVars[idx].type) == DT_MBCHARTBL)
+  {
+    mbchar_table *mbt = (*((mbchar_table **) MuttVars[idx].data));
+    strfcpy (tmp, mbt ? NONULL (mbt->orig_str) : "", sizeof (tmp));
+  }
   else if (DTYPE (MuttVars[idx].type) == DT_ADDR)
   {
     rfc822_write_address (tmp, sizeof (tmp), *((ADDRESS **) MuttVars[idx].data), 0);
@@ -3113,7 +3391,7 @@ int mutt_query_variables (LIST *queries)
 }
 
 /* dump out the value of all the variables we have */
-int mutt_dump_variables (void)
+int mutt_dump_variables (int hide_sensitive)
 {
   int i;
   
@@ -3132,6 +3410,11 @@ int mutt_dump_variables (void)
     if (MuttVars[i].type == DT_SYN)
       continue;
 
+    if (hide_sensitive && IS_SENSITIVE(MuttVars[i]))
+    {
+        printf("%s='***'\n", MuttVars[i].option);
+        continue;
+    }
     snprintf (command, sizeof (command), "set ?%s\n", MuttVars[i].option);
     if (mutt_parse_rc_line (command, &token, &err) == -1)
     {
@@ -3218,13 +3501,55 @@ static int mutt_execute_commands (LIST *p)
   return 0;
 }
 
+static char* mutt_find_cfg (const char *home, const char *xdg_cfg_home)
+{
+  const char* names[] =
+  {
+    "neomuttrc-" PACKAGE_VERSION,
+    "neomuttrc",
+    "muttrc-" MUTT_VERSION,
+    "muttrc",
+    NULL,
+  };
+
+  const char* locations[][2] =
+  {
+    { xdg_cfg_home, "mutt/", },
+    { home, ".", },
+    { home, ".mutt/" },
+    { NULL, NULL },
+  };
+
+  int i;
+
+  for (i = 0; locations[i][0] || locations[i][1]; i++)
+  {
+    int j;
+
+    if (!locations[i][0])
+      continue;
+
+    for (j = 0; names[j]; j++)
+    {
+      char buffer[STRING];
+
+      snprintf (buffer, sizeof (buffer),
+                "%s/%s%s", locations[i][0], locations[i][1], names[j]);
+      if (access (buffer, F_OK) == 0)
+        return safe_strdup(buffer);
+    }
+  }
+
+  return NULL;
+}
+
 void mutt_init (int skip_sys_rc, LIST *commands)
 {
   struct passwd *pw;
   struct utsname utsname;
   char *p, buffer[STRING];
   char *domain = NULL;
-  int i, default_rc = 0, need_pause = 0;
+  int i, need_pause = 0;
   BUFFER err;
 
   mutt_buffer_init (&err);
@@ -3453,52 +3778,40 @@ void mutt_init (int skip_sys_rc, LIST *commands)
 
   if (!Muttrc)
   {
-    do
+    char *xdg_cfg_home = getenv ("XDG_CONFIG_HOME");
+
+    if (!xdg_cfg_home && Homedir)
     {
-      if (mutt_set_xdg_path (kXDGConfigHome, buffer, sizeof buffer))
-        break;
-
-      snprintf (buffer, sizeof buffer, "%s/.neomuttrc", NONULL(Homedir));
-      if (access (buffer, F_OK) == 0)
-        break;
-
-      snprintf (buffer, sizeof buffer, "%s/.mutt/neomuttrc", NONULL(Homedir));
-      if (access (buffer, F_OK) == 0)
-        break;
-
-      snprintf (buffer, sizeof buffer, "%s/.muttrc-%s", NONULL(Homedir), PACKAGE_VERSION);
-      if (access (buffer, F_OK) == 0)
-        break;
-
-      snprintf (buffer, sizeof buffer, "%s/.muttrc", NONULL(Homedir));
-      if (access (buffer, F_OK) == 0)
-        break;
-
-      snprintf (buffer, sizeof buffer, "%s/.mutt/muttrc-%s", NONULL(Homedir), PACKAGE_VERSION);
-      if (access (buffer, F_OK) == 0)
-        break;
-
-      snprintf (buffer, sizeof buffer, "%s/.mutt/muttrc", NONULL(Homedir));
-      if (access (buffer, F_OK) == 0)
-        break;
-
-      /* default to .muttrc for alias_file */
-      snprintf (buffer, sizeof buffer, "%s/.muttrc", NONULL(Homedir));
+      snprintf (buffer, sizeof (buffer), "%s/.config", Homedir);
+      xdg_cfg_home = buffer;
     }
-    while (0);
 
-    default_rc = 1;
-    Muttrc = safe_strdup (buffer);
+    char *config = mutt_find_cfg (Homedir, xdg_cfg_home);
+    if (config)
+      Muttrc = mutt_add_list (Muttrc, config);
   }
   else
   {
-    strfcpy (buffer, Muttrc, sizeof (buffer));
-    FREE (&Muttrc);
-    mutt_expand_path (buffer, sizeof (buffer));
-    Muttrc = safe_strdup (buffer);
+    for (LIST *config = Muttrc; config != NULL; config = config->next)
+    {
+      strfcpy(buffer, config->data, sizeof(buffer));
+      FREE(&config->data);
+      mutt_expand_path(buffer, sizeof(buffer));
+      config->data = safe_strdup(buffer);
+      if (access(config->data, F_OK))
+      {
+        snprintf(buffer, sizeof(buffer), "%s: %s", config->data, strerror(errno));
+        mutt_endwin(buffer);
+        exit(1);
+      }
+    }
   }
-  FREE (&AliasFile);
-  AliasFile = safe_strdup (NONULL(Muttrc));
+
+  if (Muttrc)
+  {
+    FREE (&AliasFiles);
+    AliasFiles = mutt_copy_list(Muttrc);
+  }
 
   /* Process the global rc file if it exists and the user hasn't explicity
      requested not to via "-n".  */
@@ -3509,11 +3822,15 @@ void mutt_init (int skip_sys_rc, LIST *commands)
       if (mutt_set_xdg_path (kXDGConfigDirs, buffer, sizeof buffer))
         break;
 
-      snprintf (buffer, sizeof buffer, "%s/NeoMuttrc", SYSCONFDIR);
+      snprintf (buffer, sizeof buffer, "%s/neomuttrc-%s", SYSCONFDIR, PACKAGE_VERSION);
       if (access (buffer, F_OK) == 0)
         break;
 
-      snprintf (buffer, sizeof buffer, "%s/Muttrc-%s", SYSCONFDIR, PACKAGE_VERSION);
+      snprintf (buffer, sizeof buffer, "%s/neomuttrc", SYSCONFDIR);
+      if (access (buffer, F_OK) == 0)
+        break;
+
+      snprintf (buffer, sizeof buffer, "%s/Muttrc-%s", SYSCONFDIR, MUTT_VERSION);
       if (access (buffer, F_OK) == 0)
         break;
 
@@ -3521,7 +3838,15 @@ void mutt_init (int skip_sys_rc, LIST *commands)
       if (access (buffer, F_OK) == 0)
         break;
 
-      snprintf (buffer, sizeof buffer, "%s/Muttrc-%s", PKGDATADIR, PACKAGE_VERSION);
+      snprintf (buffer, sizeof buffer, "%s/neomuttrc-%s", PKGDATADIR, PACKAGE_VERSION);
+      if (access (buffer, F_OK) == 0)
+        break;
+
+      snprintf (buffer, sizeof buffer, "%s/neomuttrc", PKGDATADIR);
+      if (access (buffer, F_OK) == 0)
+        break;
+
+      snprintf (buffer, sizeof buffer, "%s/Muttrc-%s", PKGDATADIR, MUTT_VERSION);
       if (access (buffer, F_OK) == 0)
         break;
 
@@ -3539,23 +3864,19 @@ void mutt_init (int skip_sys_rc, LIST *commands)
   }
 
   /* Read the user's initialization file.  */
-  if (access (Muttrc, F_OK) != -1)
+  for (LIST *config = Muttrc; config != NULL; config = config->next)
   {
-    if (!option (OPTNOCURSES))
-      endwin ();
-    if (source_rc (Muttrc, &err) != 0)
+    if (config->data)
     {
-      fputs (err.data, stderr);
-      fputc ('\n', stderr);
-      need_pause = 1;
+      if (!option(OPTNOCURSES))
+        endwin();
+      if (source_rc(config->data, &err) != 0)
+      {
+        fputs(err.data, stderr);
+        fputc('\n', stderr);
+        need_pause = 1;
+      }
     }
-  }
-  else if (!default_rc)
-  {
-    /* file specified by -F does not exist */
-    snprintf (buffer, sizeof (buffer), "%s: %s", Muttrc, strerror (errno));
-    mutt_endwin (buffer);
-    exit (1);
   }
 
   if (mutt_execute_commands (commands) != 0)
@@ -3566,6 +3887,8 @@ void mutt_init (int skip_sys_rc, LIST *commands)
     if (mutt_any_key_to_continue (NULL) == -1)
       mutt_exit(1);
   }
+
+  mutt_mkdir(Tempdir, S_IRWXU);
 
   mutt_read_histfile ();
 

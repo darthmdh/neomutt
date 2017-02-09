@@ -21,8 +21,6 @@
 
 #include "config.h"
 
-#ifdef HAVE_GDBM
-
 #include "hcache-backend.h"
 #include "mutt.h"
 #include <gdbm.h>
@@ -63,7 +61,7 @@ hcache_gdbm_fetch(void *ctx, const char *key, size_t keylen)
 static void
 hcache_gdbm_free(void *vctx, void **data)
 {
-    FREE(data);
+    FREE(data); /* __FREE_CHECKED__ */
 }
 
 static int
@@ -120,4 +118,3 @@ hcache_gdbm_backend(void)
 
 HCACHE_BACKEND_OPS(gdbm)
 
-#endif /* HAVE_GDBM */

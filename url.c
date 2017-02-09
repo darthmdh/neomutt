@@ -92,7 +92,7 @@ url_scheme_t url_check_scheme (const char *s)
 
   strfcpy (sbuf, s, t - s + 1);
   for (t = sbuf; *t; t++)
-    *t = ascii_tolower (*t);
+    *t = tolower (*t);
 
   if ((i = mutt_getvaluebyname (sbuf, UrlMap)) == -1)
     return U_UNKNOWN;
@@ -316,7 +316,7 @@ int url_parse_mailto (ENVELOPE *e, char **body, const char *src)
      * choose to create a message with only a subset of the headers given in
      * the URL.
      */
-    if (mutt_matches_ignore(tag, MailtoAllow))
+    if (mutt_matches_list (tag, MailtoAllow))
     {
       if (!ascii_strcasecmp (tag, "body"))
       {

@@ -209,6 +209,8 @@ const struct binding_t OpMain[] = { /* map: index */
 #ifdef USE_NOTMUCH
   { "change-vfolder",		OP_MAIN_CHANGE_VFOLDER,         NULL },
   { "vfolder-from-query",	OP_MAIN_VFOLDER_FROM_QUERY,     NULL },
+  { "vfolder-window-backward",	OP_MAIN_WINDOWED_VFOLDER_BACKWARD,   NULL },
+  { "vfolder-window-forward",	OP_MAIN_WINDOWED_VFOLDER_FORWARD,    NULL },
   { "modify-labels",		OP_MAIN_MODIFY_LABELS,		NULL },
   { "modify-labels-then-hide",	OP_MAIN_MODIFY_LABELS_THEN_HIDE, NULL },
   { "entire-thread",		OP_MAIN_ENTIRE_THREAD,          NULL },
@@ -394,7 +396,9 @@ const struct binding_t OpAttach[] = { /* map: attachment */
 const struct binding_t OpCompose[] = { /* map: compose */
   { "attach-file",	OP_COMPOSE_ATTACH_FILE,		"a" },
   { "attach-message",	OP_COMPOSE_ATTACH_MESSAGE,	"A" },
+#ifdef USE_NNTP
   { "attach-news-message",OP_COMPOSE_ATTACH_NEWS_MESSAGE,NULL },
+#endif
   { "edit-bcc",		OP_COMPOSE_EDIT_BCC,		"b" },
   { "edit-cc",		OP_COMPOSE_EDIT_CC,		"c" },
   { "copy-file",	OP_SAVE,			"C" },

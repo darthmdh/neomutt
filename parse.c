@@ -986,7 +986,7 @@ int mutt_parse_rfc822_line (ENVELOPE *e, HEADER *hdr, char *line, char *p, short
   if (lastp)
     last = *lastp;
   
-  switch (ascii_tolower (line[0]))
+  switch (tolower (line[0]))
   {
     case 'a':
     if (ascii_strcasecmp (line+1, "pparently-to") == 0)
@@ -1347,8 +1347,7 @@ int mutt_parse_rfc822_line (ENVELOPE *e, HEADER *hdr, char *line, char *p, short
     /* restore the original line */
     line[strlen (line)] = ':';
     
-    if (weed && option (OPTWEED) && mutt_matches_ignore (line, Ignore)
-	&& !mutt_matches_ignore (line, UnIgnore))
+    if (weed && option (OPTWEED) && mutt_matches_ignore (line))
       goto done;
 
     if (last)

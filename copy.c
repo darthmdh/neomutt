@@ -132,7 +132,7 @@ mutt_copy_hdr (FILE *in, FILE *out, LOFF_T off_start, LOFF_T off_end, int flags,
 
   hdr_count = 1;
   x = 0;
-  error = FALSE;
+  error = false;
 
   /* We are going to read and collect the headers in an array
    * so we are able to do re-ordering.
@@ -200,9 +200,7 @@ mutt_copy_hdr (FILE *in, FILE *out, LOFF_T off_start, LOFF_T off_end, int flags,
 
       /* note: CH_FROM takes precedence over header weeding. */
       if (!((flags & CH_FROM) && (flags & CH_FORCE_FROM) && this_is_from) &&
-	  (flags & CH_WEED) &&
-	  mutt_matches_ignore (buf, Ignore) &&
-	  !mutt_matches_ignore (buf, UnIgnore))
+	  (flags & CH_WEED) && mutt_matches_ignore (buf))
 	continue;
       if ((flags & CH_WEED_DELIVERED) &&
 	  ascii_strncasecmp ("Delivered-To:", buf, 13) == 0)
@@ -304,7 +302,7 @@ mutt_copy_hdr (FILE *in, FILE *out, LOFF_T off_start, LOFF_T off_end, int flags,
 				   flags & CH_PREFIX ? prefix : 0,
                                    mutt_window_wrap_cols (MuttIndexWindow, Wrap), flags) == -1)
 	{
-	  error = TRUE;
+	  error = true;
 	  break;
 	}
       }
@@ -312,7 +310,7 @@ mutt_copy_hdr (FILE *in, FILE *out, LOFF_T off_start, LOFF_T off_end, int flags,
       {      
 	if (fputs (headers[x], out) == EOF)
 	{
-	  error = TRUE;
+	  error = true;
 	  break;
 	}
       }
@@ -433,7 +431,7 @@ mutt_copy_header (FILE *in, HEADER *h, FILE *out, int flags, const char *prefix)
   {
     /* Add some fake headers based on notmuch data */
     char *folder = nm_header_get_folder(h);
-    if (folder)
+    if (folder && !(option (OPTWEED) && mutt_matches_ignore ("folder")))
     {
       char buffer[LONG_STRING];
       strfcpy (buffer, folder, sizeof (buffer));
@@ -444,7 +442,7 @@ mutt_copy_header (FILE *in, HEADER *h, FILE *out, int flags, const char *prefix)
       fputc ('\n', out);
     }
     char *tags = nm_header_get_tags(h);
-    if (tags)
+    if (tags && !(option (OPTWEED) && mutt_matches_ignore ("tags")))
     {
       fputs ("Tags: ", out);
       fputs (tags, out);

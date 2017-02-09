@@ -128,7 +128,7 @@ at <ulink url="http://wiki.mutt.org/">http://wiki.mutt.org/</ulink>.
 <listitem>
 <para>
 For the IRC user community, visit channel <emphasis>#mutt</emphasis> on
-<ulink url="http://www.freenode.net/">irc.freenode.net</ulink>.
+<ulink url="http://freenode.net/">irc.freenode.net</ulink>.
 </para>
 </listitem>
 </varlistentry>
@@ -2349,75 +2349,126 @@ See also the <link linkend="postpone">$postpone</link> quad-option.
 <title>Location of Initialization Files</title>
 
 <para>
-  When Mutt starts up it looks for two configuration files -- a
-  <quote>system</quote> file and a <quote>user</quote> file.
+  When Mutt starts up it looks for two configuration files -- one
+  <quote>system</quote> file and one <quote>user</quote> file.
 </para>
 
 <para>
-  Mutt will search for a system config file in several places.  The filenames
-  may depend on the version number of Mutt.  Mutt will read just one file, the
-  first file it finds, from the list below.
+  Mutt searches for several different file names when looking for config.  It
+  looks for NeoMutt config files before Mutt config files and versioned config
+  before plain config.  For example:
 </para>
 
-<para>
-  The system config file will not be read if the <quote>-n</quote>
-  option is used on the <link linkend="commandline">command line</link>.
-</para>
-
-<table id="system-muttrc">
-  <title>Mutt system config file locations</title>
+<table id="muttrc-order">
+  <title>Mutt config file search order</title>
   <tgroup cols="1">
-    <thead>
-      <row><entry>File Location</entry></row>
-    </thead>
     <tbody>
-      <row><entry>$XDG_CONFIG_DIRS/neomutt/config</entry></row>
-      <row><entry>/etc/NeoMuttrc</entry></row>
-      <row><entry>/etc/Muttrc-20161104</entry></row>
-      <row><entry>/etc/Muttrc</entry></row>
-      <row><entry>/usr/share/mutt/Muttrc-20161104</entry></row>
-      <row><entry>/usr/share/mutt/Muttrc</entry></row>
+      <row><entry>neomuttrc-20161126</entry></row> 
+      <row><entry>neomuttrc</entry></row>          
+      <row><entry>muttrc-1.7.2</entry></row>       
+      <row><entry>muttrc</entry></row>             
     </tbody>
   </tgroup>
 </table>
 
 <para>
-  <emphasis>($XDG_CONFIG_DIRS defaults to "/etc/xdg".)</emphasis>
+  This allows the user to create separate Mutt and NeoMutt config files on the
+  same system.
 </para>
 
-<para>
-  Mutt will search for a user config file in several places in your home
-  directory.  The filenames may depend on the version number of Mutt.  Mutt
-  will read just one file, the first file it finds, from the list below.
-</para>
+<sect2 id="muttrc-system">
+  <title>Location of system config files</title>
 
-<para>
-  You may specify your own location for the user config file using the
-  <quote>-F</quote> option on the <link linkend="commandline">command line</link>.
-</para>
+  <para>
+    Mutt will search for a system config file in a <literal>mutt</literal>
+    directory in several places.  First it searches the locations specified in
+    the <literal>XDG_CONFIG_DIRS</literal> environment variable, which defaults
+    to <literal>/etc/xdg</literal>.  Next, it looks in <literal>/etc</literal>.
+    Finally, it tries <literal>/usr/share</literal>.
+  </para>
 
-<table id="user-muttrc">
-  <title>Mutt user config file locations</title>
-  <tgroup cols="1">
-    <thead>
-      <row><entry>File Location</entry></row>
-    </thead>
-    <tbody>
-      <row><entry>$XDG_CONFIG_HOME/neomutt/config</entry></row>
-      <row><entry>~/.neomuttrc</entry></row>
-      <row><entry>~/.mutt/neomuttrc</entry></row>
-      <row><entry>~/.muttrc-20161104</entry></row>
-      <row><entry>~/.muttrc</entry></row>
-      <row><entry>~/.mutt/muttrc-20161104</entry></row>
-      <row><entry>~/.mutt/muttrc</entry></row>
-      <row><entry>~/.muttrc</entry></row>
-    </tbody>
-  </tgroup>
-</table>
+  <para>
+    The system config file will not be read if the <quote>-n</quote>
+    option is used on the <link linkend="commandline">command line</link>.
+  </para>
 
-<para>
-  <emphasis>($XDG_CONFIG_HOME defaults to "$HOME/.config".)</emphasis>
-</para>
+  <para>
+    Mutt will read just one file, the first file it finds, from the list below.
+  </para>
+
+  <table id="muttrc-system-files">
+    <title>Mutt system config file locations</title>
+    <tgroup cols="2">
+      <thead>
+        <row>
+          <entry>File Location</entry>
+          <entry>Notes</entry>
+        </row>
+      </thead>
+      <tbody>
+        <row><entry>/etc/xdg/mutt/neomuttrc-20161126</entry><entry>NeoMutt release version</entry></row> 
+        <row><entry>/etc/xdg/mutt/neomuttrc</entry></row>          
+        <row><entry>/etc/xdg/mutt/Muttrc-1.7.2</entry><entry>Mutt release version, Note the case of the filename</entry></row>       
+        <row><entry>/etc/xdg/mutt/Muttrc</entry><entry>Note the case of the filename</entry></row>             
+        <row><entry>/etc/mutt/neomuttrc-20161126</entry><entry>NeoMutt release version</entry></row> 
+        <row><entry>/etc/mutt/neomuttrc</entry></row>          
+        <row><entry>/etc/mutt/Muttrc-1.7.2</entry><entry>Mutt release version, Note the case of the filename</entry></row>       
+        <row><entry>/etc/mutt/Muttrc</entry><entry>Note the case of the filename</entry></row>             
+        <row><entry>/usr/share/mutt/neomuttrc-20161126</entry><entry>NeoMutt release version</entry></row>
+        <row><entry>/usr/share/mutt/neomuttrc</entry></row>
+        <row><entry>/usr/share/mutt/Muttrc-1.7.2</entry><entry>Mutt release version, Note the case of the filename</entry></row>
+        <row><entry>/usr/share/mutt/Muttrc</entry><entry>Note the case of the filename</entry></row>
+      </tbody>
+    </tgroup>
+  </table>
+</sect2>
+
+<sect2 id="muttrc-user">
+  <title>Location of user config files</title>
+
+  <para>
+    Mutt will search for a user config file in several places.  First it looks
+    in the directory specified in the <literal>XDG_CONFIG_HOME</literal>
+    environment variable, which defaults to <literal>~/.config/mutt</literal>.
+    Next, it looks in <literal>~</literal> (your home directory).  Finally, it
+    tries <literal>~/.mutt</literal>.
+  </para>
+
+  <para>
+    You may specify your own location for the user config file using the
+    <quote>-F</quote> option on the <link linkend="commandline">command line</link>.
+  </para>
+
+  <para>
+    Mutt will read just one file, the first file it finds, from the list below.
+  </para>
+
+  <table id="muttrc-user-files">
+    <title>Mutt user config file locations</title>
+    <tgroup cols="2">
+      <thead>
+        <row>
+          <entry>File Location</entry>
+          <entry>Notes</entry>
+        </row>
+      </thead>
+      <tbody>
+        <row><entry>~/.config/mutt/neomuttrc-20161126</entry><entry>NeoMutt release version</entry></row> 
+        <row><entry>~/.config/mutt/neomuttrc</entry></row>          
+        <row><entry>~/.config/mutt/muttrc-1.7.2</entry><entry>Mutt release version</entry></row>       
+        <row><entry>~/.config/mutt/muttrc</entry></row>             
+        <row><entry>~/.neomuttrc-20161126</entry><entry>NeoMutt release version</entry></row> 
+        <row><entry>~/.neomuttrc</entry></row>          
+        <row><entry>~/.muttrc-1.7.2</entry><entry>Mutt release version</entry></row>       
+        <row><entry>~/.muttrc</entry></row>             
+        <row><entry>~/.mutt/neomuttrc-20161126</entry><entry>NeoMutt release version</entry></row> 
+        <row><entry>~/.mutt/neomuttrc</entry></row>          
+        <row><entry>~/.mutt/muttrc-1.7.2</entry><entry>Mutt release version</entry></row>       
+        <row><entry>~/.mutt/muttrc</entry></row>             
+      </tbody>
+    </tgroup>
+  </table>
+</sect2>
 
 </sect1>
 
@@ -5019,29 +5070,6 @@ configuration command, preventing Mutt from recording the
 <command>macro</command>'s commands into its history.
 </para>
 
-<para>
-You can restrict address pattern matching to aliases that you have
-defined with the "@" modifier.  This example matches messages whose
-recipients are all from Germany, and who are known to your alias list.
-</para>
-
-<para>
-<screen>
-^@~C \.de$
-</screen>
-</para>
-
-<para>
-To match any defined alias, use a regular expression that matches any
-string.  This example matches messages whose senders are known aliases.
-</para>
-
-<para>
-<screen>
-@~f .
-</screen>
-</para>
-
 </sect3>
 
 </sect2>
@@ -5832,7 +5860,11 @@ shows several ways to select messages.
 <row><entry>~L <emphasis>EXPR</emphasis></entry><entry>messages either originated or received by <emphasis>EXPR</emphasis></entry></row>
 <row><entry>%L <emphasis>GROUP</emphasis></entry><entry>message either originated or received by any member of <emphasis>GROUP</emphasis></entry></row>
 <row><entry>~l</entry><entry>messages addressed to a known mailing list</entry></row>
-<row><entry>~m [<emphasis>MIN</emphasis>]-[<emphasis>MAX</emphasis>]</entry><entry>messages in the range <emphasis>MIN</emphasis> to <emphasis>MAX</emphasis> *)</entry></row>
+<row><entry>~m [<emphasis>MIN</emphasis>]-[<emphasis>MAX</emphasis>]</entry><entry>messages with numbers in the range <emphasis>MIN</emphasis> to <emphasis>MAX</emphasis> ***)</entry></row>
+<row><entry>~m &lt;[<emphasis>MAX</emphasis>]</entry><entry>messages with numbers less than <emphasis>MAX</emphasis> ***)</entry></row>
+<row><entry>~m &gt;[<emphasis>MIN</emphasis>]</entry><entry>messages with numbers greater than <emphasis>MIN</emphasis> ***)</entry></row>
+<row><entry>~m [<emphasis>M</emphasis>]</entry><entry>just message number <emphasis>M</emphasis> ***)</entry></row>
+<row><entry>~m [<emphasis>MIN</emphasis>],[<emphasis>MAX</emphasis>]</entry><entry>messages with offsets (from selected message) in the range <emphasis>MIN</emphasis> to <emphasis>MAX</emphasis> ***)</entry></row>
 <row><entry>~n [<emphasis>MIN</emphasis>]-[<emphasis>MAX</emphasis>]</entry><entry>messages with a score in the range <emphasis>MIN</emphasis> to <emphasis>MAX</emphasis> *)</entry></row>
 <row><entry>~N</entry><entry>new messages</entry></row>
 <row><entry>~O</entry><entry>old messages</entry></row>
@@ -5880,6 +5912,12 @@ specify kilobyte and megabyte respectively.
 </para>
 
 <para>
+  ***) The message number ranges (introduced by <literal>~m</literal>)
+  are even more general and powerful than the other
+  types of ranges.  Read on and see <xref linkend="message-ranges"/> below.
+</para>
+
+<para>
 Special attention has to be payed when using regular expressions inside
 of patterns.  Specifically, Mutt's parser for these patterns will strip
 one level of backslash (<quote>\</quote>), which is normally used for
@@ -5913,6 +5951,193 @@ recipients from Germany.
 ^~C \.de$
 </screen>
 </example>
+
+<para>
+You can restrict address pattern matching to aliases that you have
+defined with the "@" modifier.  This example matches messages whose
+recipients are all from Germany, and who are known to your alias list.
+</para>
+
+<example id="ex-restrict-to-aliases">
+<title>Matching restricted to aliases</title>
+<screen>
+^@~C \.de$
+</screen>
+</example>
+
+<para>
+To match any defined alias, use a regular expression that matches any
+string.  This example matches messages whose senders are known aliases.
+</para>
+
+<example id="ex-match-alias">
+<title>Matching any defined alias</title>
+<screen>
+@~f .
+</screen>
+</example>
+
+<sect3 id="message-ranges">
+  <title>Message Ranges</title>
+
+  <para>
+    If a message number range (from now on: MNR) contains a comma (<literal>,</literal>),
+    it is a <emphasis>relative</emphasis> MNR.  That means the numbers denote
+    <emphasis>offsets</emphasis> from the highlighted message.  For example:
+  </para>
+
+  <table id="relative-mnrs">
+    <title>Relative Message Number Ranges</title>
+    <tgroup cols="2">
+      <thead>
+        <row>
+          <entry>Pattern</entry>
+          <entry>Explanation</entry>
+        </row>
+      </thead>
+      <tbody>
+        <row>
+          <entry>
+            <literal>~m -2,2</literal>
+          </entry>
+          <entry>Previous 2, highlighted and next 2 emails</entry>
+        </row>
+        <row>
+          <entry>
+            <literal>~m 0,1</literal>
+          </entry>
+          <entry>Highlighted and next email</entry>
+        </row>
+      </tbody>
+    </tgroup>
+  </table>
+
+  <para>
+    In addition to numbers, either side of the range can also contain one
+    of the special characters (shortcuts)<literal>.^$</literal>.  The meaning is:
+  </para>
+
+  <table id="mnrs-shortcuts">
+    <title>Message Number Shortcuts</title>
+    <tgroup cols="4">
+      <thead>
+        <row>
+          <entry>Shortcut</entry>
+          <entry>Explanation</entry>
+          <entry>Example</entry>
+          <entry>Meaning</entry>
+        </row>
+      </thead>
+      <tbody>
+        <row>
+          <entry>
+            <literal>.</literal>
+          </entry>
+          <entry>Current / Highlighted</entry>
+          <entry>
+            <literal>~m -3,.</literal>
+          </entry>
+          <entry>Previous 3 emails plus the highlighted one</entry>
+        </row>
+        <row>
+          <entry>
+            <literal>$</literal>
+          </entry>
+          <entry>Last</entry>
+          <entry>
+            <literal>~m .,$</literal>
+          </entry>
+          <entry>Highlighted email and all the later ones</entry>
+        </row>
+        <row>
+          <entry>
+            <literal>^</literal>
+          </entry>
+          <entry>First</entry>
+          <entry>
+            <literal>~m ^,1</literal>
+          </entry>
+          <entry>Highlighted, next and all preceding ones</entry>
+        </row>
+      </tbody>
+    </tgroup>
+  </table>
+
+  <para>
+    Lastly, you can also leave either side of the range blank, to make it
+    extend as far as possible.  For example, <literal>~m ,1</literal> has
+    the same meaning as the last example in <xref
+    linkend="mnrs-shortcuts"/>.
+  </para>
+
+  <para>
+    Otherwise, if a MNR <emphasis>doesn't</emphasis> contain a comma, the
+    meaning is similar to other ranges, except that the shortcuts are
+    still available.  Examples:
+  </para>
+
+  <table id="mnrs-absolute">
+    <title>Absolute Message Number Ranges</title>
+    <tgroup cols="2">
+      <thead>
+        <row>
+          <entry>Pattern</entry>
+          <entry>Explanation</entry>
+        </row>
+      </thead>
+      <tbody>
+        <row>
+          <entry>
+            <literal>~m 3-10</literal>
+          </entry>
+          <entry>Emails 3 to 10</entry>
+        </row>
+        <row>
+          <entry>
+            <literal>~m -10</literal>
+          </entry>
+          <entry>Emails 1 to 10</entry>
+        </row>
+        <row>
+          <entry>
+            <literal>~m 10-</literal>
+          </entry>
+          <entry>Emails 10 to last</entry>
+        </row>
+        <row>
+          <entry>
+            <literal>~m &lt;3</literal>
+          </entry>
+          <entry>First and second email</entry>
+        </row>
+        <row>
+          <entry>
+            <literal>~m ^-2</literal>
+          </entry>
+          <entry>First and second email</entry>
+        </row>
+        <row>
+          <entry>
+            <literal>~m &gt;1</literal>
+          </entry>
+          <entry>Everything but first email</entry>
+        </row>
+        <row>
+          <entry>
+            <literal>~m 2-$</literal>
+          </entry>
+          <entry>Everything but first email</entry>
+        </row>
+        <row>
+          <entry>
+            <literal>~m 2</literal>
+          </entry>
+          <entry>Just the second email</entry>
+        </row>
+      </tbody>
+    </tgroup>
+  </table>
+</sect3>
 
 </sect2>
 
@@ -6480,6 +6705,24 @@ if the mailbox shortcut results in an empty regexp.
 
 </sect1>
 
+<sect1 id="setenv">
+<title>Managing the Environment</title>
+
+<para>
+You can alter the environment that Mutt passes on to its child processes
+using the <quote>setenv</quote> and <quote>unsetenv</quote> operators.
+(N.B. These follow Mutt-style syntax, not shell-style!)  You can also
+query current environment values by prefixing a <quote>?</quote> character.
+</para>
+
+<screen>
+setenv TERM vt100
+setenv ORGANIZATION "The Mutt Development Team"
+unsetenv DISPLAY
+setenv ?LESS
+</screen>
+</sect1>
+
 <sect1 id="query">
 <title>External Address Queries</title>
 
@@ -6766,13 +7009,12 @@ known as <quote>keywords</quote> or <quote>tags</quote>.
 </para>
 
 <para>
-If you are new to Mutt or to using keywords in Mutt, you only need
-to know that the &lt;edit-label&gt; binding (<literal>y</literal> by
-default) will edit keywords, and that you can search for keywords
-using the <literal>~y</literal> pattern, and use the <literal>%y</literal>
-expando to display it in your <literal>$index_format</literal>.  You also
-can sort by keyword.  Keywords that you set will be stored to the
-<literal>X-Label:</literal> header by default.
+If you are new to Mutt or to using keywords in Mutt, you only need to know that
+the &lt;edit-label&gt; binding will edit keywords, and that you can search for
+keywords using the <literal>~y</literal> pattern, and use the
+<literal>%y</literal> expando to display it in your
+<literal>$index_format</literal>.  You also can sort by keyword.  Keywords that
+you set will be stored to the <literal>X-Label:</literal> header by default.
 </para>
 
 <para>
@@ -11939,10 +12181,10 @@ bind index \CG get-message
 
     <itemizedlist>
       <listitem><para>For more information, see:
-      <ulink url="http://notmuchmail.org/">http://notmuchmail.org/</ulink>
+      <ulink url="https://notmuchmail.org/">https://notmuchmail.org/</ulink>
       </para></listitem>
       <listitem><para>More examples:
-      <ulink url="http://notmuchmail.org/mutttips/">http://notmuchmail.org/mutttips/</ulink>
+      <ulink url="https://notmuchmail.org/mutttips/">https://notmuchmail.org/mutttips/</ulink>
       </para></listitem>
     </itemizedlist>
 
@@ -11984,8 +12226,8 @@ virtual-mailboxes "My INBOX" "notmuch://?query=tag:inbox"
       </para>
 
       <para>
-        See SEARCH SYNTAX in notmuch man page. Don't forget to use
-        <quote>and</quote> and <quote>or</quote> operators in your queries.
+	See SEARCH SYNTAX in notmuch man page. Don't forget to use operators
+	(<quote>and</quote> / <quote>or</quote>) in your queries.
       </para>
 
       <para>
@@ -12012,7 +12254,7 @@ virtual-mailboxes "My INBOX" "notmuch://?query=tag:inbox"
 
       <para>
         For more details about Xapian queries, see:
-        <ulink url="http://xapian.org/docs/queryparser.html">http://xapian.org/docs/queryparser.html</ulink>
+        <ulink url="https://xapian.org/docs/queryparser.html">https://xapian.org/docs/queryparser.html</ulink>
       </para>
 
       <para>
@@ -12210,7 +12452,7 @@ virtual-mailboxes "My INBOX" "notmuch://?query=tag:inbox"
           <row>
             <entry>index,pager</entry>
             <entry><literal>&lt;modify-labels-then-hide&gt;</literal></entry>
-            <entry>modify labels and then hide message</entry>
+            <entry>modify labels and then hide message by applying the "quasi-deleted" state. Normal redisplay rules apply here, so the user must call &lt;sync-mailbox&gt; for the changes to be displayed</entry>
           </row>
           <row>
             <entry>index,pager</entry>
@@ -12221,6 +12463,16 @@ virtual-mailboxes "My INBOX" "notmuch://?query=tag:inbox"
             <entry>index,pager</entry>
             <entry><literal>&lt;vfolder-from-query&gt;</literal></entry>
             <entry>generate virtual folder from query</entry>
+          </row>
+          <row>
+            <entry>index,pager</entry>
+            <entry><literal>&lt;vfolder-window-forward&gt;</literal></entry>
+            <entry>generate virtual folder by moving the query's time window forward</entry>
+          </row>
+          <row>
+            <entry>index,pager</entry>
+            <entry><literal>&lt;vfolder-window-backward&gt;</literal></entry>
+            <entry>generate virtual folder by moving the query's time window backward</entry>
           </row>
         </tbody>
       </tgroup>
@@ -12244,6 +12496,16 @@ virtual-mailboxes "My INBOX" "notmuch://?query=tag:inbox"
           <arg choice="plain">
             <replaceable class="parameter">notmuch-URI</replaceable>
           </arg>
+        </arg>
+      </group>
+
+      <command>unvirtual-mailboxes</command>
+      <group choice="req">
+        <arg choice="plain">
+          <replaceable class="parameter">*</replaceable>
+        </arg>
+        <arg choice="plain" rep="repeat">
+          <replaceable class="parameter">mailbox</replaceable>
         </arg>
       </group>
 
@@ -12363,6 +12625,12 @@ set vfolder_format = &quot;%6n(%6N) %f&quot;
 # as a spoolfile.</emphasis>
 set virtual_spoolfile = no
 
+<emphasis role="comment"># setup time window preferences
+# first setup the duration, and then the time unit of that duration
+# when set to 0 (the default) the search window feature is disabled</emphasis>
+set nm_query_window_duration=2
+set nm_query_window_timebase="week" # or "hour", "day", "week", "month", "year"
+
 <emphasis role="comment"># --------------------------------------------------------------------------
 # FUNCTIONS - shown with an example mapping
 # --------------------------------------------------------------------------
@@ -12376,8 +12644,15 @@ bind index,pager + entire-thread
 <emphasis role="comment"># modify (notmuch) tags</emphasis>
 bind index,pager \` modify-labels
 
+<emphasis role="comment"># modify (notmuch) tag non-interactively.</emphasis>
+bind index,pager tt "&lt;modify-labels&gt;!todo\n" "Toggle the 'todo' tag"
+
 <emphasis role="comment"># generate virtual folder from query</emphasis>
 bind index,pager \eX vfolder-from-query
+
+<emphasis role="comment"># generate virtual folder from query with time window</emphasis>
+bind index,pager &lt; vfolder-window-backward
+bind index,pager &gt; vfolder-window-forward
 
 <emphasis role="comment"># modify labels and then hide message
 # bind index,pager ??? modify-labels-then-hide
@@ -12391,6 +12666,8 @@ bind index,pager \eX vfolder-from-query
 
 # virtual-mailboxes description notmuch-URI { description notmuch-URI ...}
 # virtual-mailboxes &quot;Climbing&quot; &quot;notmuch://?query=climbing&quot;
+
+# unvirtual-mailboxes { * | mailbox ...}
 
 # Replace some tags with icons
 # tag-transforms tag transformed-string { tag transformed-string ...}
@@ -12474,6 +12751,7 @@ color index_tags green default
     <listitem><para>Vladimir Marek <email>Vladimir.Marek@oracle.com</email></para></listitem>
     <listitem><para>Víctor Manuel Jáquez Leal <email>vjaquez@igalia.com</email></para></listitem>
     <listitem><para>Richard Russon <email>rich@flatcap.org</email></para></listitem>
+    <listitem><para>Bernard 'Guyzmo' Pratz <email>guyzmo+github+pub@m0g.net</email></para></listitem>
     </itemizedlist>
   </sect2>
 </sect1>
@@ -14042,6 +14320,7 @@ mailboxes and to send messages from the command line as well.
 <row><entry>-c</entry><entry>specify a carbon-copy (Cc) address</entry></row>
 <row><entry>-d</entry><entry>log debugging output to ~/.muttdebug0 if mutt was compiled with +DEBUG; it can range from 1-5 and affects verbosity (a value of 2 is recommended)</entry></row>
 <row><entry>-D</entry><entry>print the value of all Mutt variables to stdout</entry></row>
+<row><entry>-D -S</entry><entry>like -D but hide the value of sensitive variables</entry></row>
 <row><entry>-E</entry><entry>edit the draft (-H) or include (-i) file</entry></row>
 <row><entry>-e</entry><entry>specify a config command to be run after initialization files are read</entry></row>
 <row><entry>-f</entry><entry>specify a mailbox to load</entry></row>
@@ -14969,6 +15248,23 @@ The following are the commands understood by Mutt:
 <replaceable class="parameter">variable</replaceable>
 </arg>
 </cmdsynopsis>
+</listitem>
+
+<listitem>
+  <cmdsynopsis>
+    <command><link linkend="setenv">setenv</link></command>
+    <arg choice="plain">
+      <replaceable class="parameter">[?]variable</replaceable>
+    </arg>
+    <arg choice="opt">
+      <replaceable class="parameter">value</replaceable>
+    </arg>
+
+    <command><link linkend="setenv">unsetenv</link></command>
+    <arg choice="plain">
+      <replaceable class="parameter">variable</replaceable>
+    </arg>
+  </cmdsynopsis>
 </listitem>
 
 <listitem>

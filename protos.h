@@ -71,12 +71,6 @@ int _mutt_aside_thread (HEADER *, short, short);
 #define mutt_thread_next_unread(x,y) _mutt_traverse_thread(x,y,MUTT_THREAD_NEXT_UNREAD)
 int _mutt_traverse_thread (CONTEXT *ctx, HEADER *hdr, int flag);
 
-
-#define mutt_new_parameter() safe_calloc (1, sizeof (PARAMETER))
-#define mutt_new_header() safe_calloc (1, sizeof (HEADER))
-#define mutt_new_envelope() safe_calloc (1, sizeof (ENVELOPE))
-#define mutt_new_enter_state() safe_calloc (1, sizeof (ENTER_STATE))
-
 typedef const char * format_t (char *, size_t, size_t, int, char, const char *, const char *, const char *, const char *, unsigned long, format_flag);
 
 void mutt_FormatString (char *, size_t, size_t, int, const char *, format_t *, unsigned long, format_flag);
@@ -87,6 +81,7 @@ void mutt_set_parameter (const char *, const char *, PARAMETER **);
 
 #ifdef USE_NOTMUCH
 int mutt_parse_virtual_mailboxes (BUFFER *path, BUFFER *s, unsigned long data, BUFFER *err);
+int mutt_parse_unvirtual_mailboxes (BUFFER *path, BUFFER *s, unsigned long data, BUFFER *err);
 #endif
 
 FILE *mutt_open_read (const char *, pid_t *);
@@ -132,6 +127,7 @@ time_t mutt_local_tz (time_t);
 time_t mutt_mktime (struct tm *, int);
 time_t mutt_parse_date (const char *, HEADER *);
 int is_from (const char *, char *, size_t, time_t *);
+void mutt_touch_atime (int);
 
 const char *mutt_attach_fmt (
 	char *dest,
@@ -315,7 +311,7 @@ int mutt_compose_attachment (BODY *a);
 int mutt_copy_body (FILE *, BODY **, BODY *);
 int mutt_decode_save_attachment (FILE *, BODY *, char *, int, int);
 int mutt_display_message (HEADER *h);
-int mutt_dump_variables (void);
+int mutt_dump_variables (int hide_sensitive);
 int mutt_edit_attachment(BODY *);
 int mutt_edit_message (CONTEXT *, HEADER *);
 int mutt_fetch_recips (ENVELOPE *out, ENVELOPE *in, int flags);
@@ -487,11 +483,6 @@ extern int vsnprintf (char *, size_t, const char *, va_list);
 #endif
 
 #ifndef HAVE_STRERROR
-#ifndef STDC_HEADERS
-extern int sys_nerr;
-extern char *sys_errlist[];
-#endif
-
 #define strerror(x) ((x) > 0 && (x) < sys_nerr) ? sys_errlist[(x)] : 0
 #endif /* !HAVE_STRERROR */
 
@@ -499,89 +490,15 @@ extern char *sys_errlist[];
 #define memmove(d,s,n) bcopy((s),(d),(n))
 #endif
 
-/* AIX doesn't define these in any headers (sigh) */
-int strcasecmp (const char *, const char *);
-int strncasecmp (const char *, const char *, size_t);
-
 #ifdef _AIX
 int setegid (gid_t);
 #endif /* _AIX */
-
-#ifndef STDC_HEADERS
-extern FILE *fdopen ();
-extern int system ();
-extern int puts ();
-extern int fputs ();
-extern int fputc ();
-extern int fseek ();
-extern char *strchr ();
-extern int getopt ();
-extern int fputs ();
-extern int fputc ();
-extern int fclose ();
-extern int fprintf();
-extern int printf ();
-extern int fgetc ();
-extern int tolower ();
-extern int toupper ();
-extern int sscanf ();
-extern size_t fread ();
-extern size_t fwrite ();
-extern int system ();
-extern int rename ();
-extern time_t time ();
-extern struct tm *localtime ();
-extern char *asctime ();
-extern char *strpbrk ();
-extern int fflush ();
-extern long lrand48 ();
-extern void srand48 ();
-extern time_t mktime ();
-extern int vsprintf ();
-extern int ungetc ();
-extern int ftruncate ();
-extern void *memset ();
-extern int pclose ();
-extern int socket ();
-extern int connect ();
-extern size_t strftime ();
-extern int lstat ();
-extern void rewind ();
-extern int readlink ();
-
-/* IRIX barfs on empty var decls because the system include file uses elipsis
-   in the declaration.  So declare all the args to avoid compiler errors.  This
-   should be harmless on other systems.  */
-int ioctl (int, int, ...);
-
-#endif
 
 /* unsorted */
 void ci_bounce_message (HEADER *, int *);
 int ci_send_message (int, HEADER *, char *, CONTEXT *, HEADER *);
 
 /* prototypes for compatibility functions */
-
-#ifndef HAVE_SETENV
-int setenv (const char *, const char *, int);
-#endif
-
-#ifndef HAVE_STRCASECMP
-int strcasecmp (char *, char *);
-int strncasecmp (char *, char *, size_t);
-#endif
-
-#ifndef HAVE_STRDUP
-char *strdup (const char *);
-#endif
-
-#ifndef HAVE_STRSEP
-char *strsep (char **, const char *);
-#endif
-
-#ifndef HAVE_STRTOK_R
-char *strtok_r (char *, const char *, char **);
-#endif
 
 #ifndef HAVE_WCSCASECMP
 int wcscasecmp (const wchar_t *a, const wchar_t *b);
@@ -591,14 +508,3 @@ int wcscasecmp (const wchar_t *a, const wchar_t *b);
 char *strcasestr (const char *, const char *);
 #endif
 
-#ifndef HAVE_MKDTEMP
-char *mkdtemp (char *tmpl);
-#endif
-
-#ifndef HAVE_STRNLEN
-size_t strnlen(const char *s, size_t maxlen);
-#endif
-
-#ifndef strndup
-char *strndup(const char *s, size_t n);
-#endif

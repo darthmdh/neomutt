@@ -148,7 +148,7 @@ void *safe_malloc (size_t siz)
 
   if (siz == 0)
     return 0;
-  if ((p = (void *) malloc (siz)) == 0)	/* __MEM_CHECKED__ */
+  if ((p = malloc (siz)) == 0)	/* __MEM_CHECKED__ */
   {
     mutt_error _("Out of memory!");
     sleep (1);
@@ -173,11 +173,11 @@ void safe_realloc (void *ptr, size_t siz)
   }
 
   if (*p)
-    r = (void *) realloc (*p, siz);	/* __MEM_CHECKED__ */
+    r = realloc (*p, siz);	/* __MEM_CHECKED__ */
   else
   {
     /* realloc(NULL, nbytes) doesn't seem to work under SunOS 4.1.x  --- __MEM_CHECKED__ */
-    r = (void *) malloc (siz);		/* __MEM_CHECKED__ */
+    r = malloc (siz);		/* __MEM_CHECKED__ */
   }
 
   if (!r)
@@ -239,7 +239,7 @@ char *safe_strdup (const char *s)
   if (!s || !*s)
     return 0;
   l = strlen (s) + 1;
-  p = (char *)safe_malloc (l);
+  p = safe_malloc (l);
   memcpy (p, s, l);
   return (p);
 }
@@ -1107,13 +1107,29 @@ int mutt_atol (const char *str, long *dst)
   return 0;
 }
 
-int mutt_is_inbox (const char *path)
-{
-  size_t plen = mutt_strlen (path);
-  return ((plen >= 6) && (mutt_strcasecmp (path + plen - 6, "/inbox") == 0));
-}
-
-int mutt_same_path (const char *a, const char *b)
+/**
+ * mutt_inbox_cmp - check whether two folders share the same path and one is
+ * an inbox.
+ *
+ * @param a First path.
+ * @param b Second path.
+ *
+ * @return -1 if a is INBOX of b, 0 if none is INBOX, 1 if b is INBOX for a
+ *
+ * This function compares two folder paths. It first looks for the position of
+ * the last common '/' character. If a valid position is found and it's not the
+ * last character in any of the two paths, the remaining parts of the paths are
+ * compared (case insensitively) with the string "INBOX". If one of the two
+ * paths matches, it's reported as being less than the other and the function
+ * returns -1 (a < b) or 1 (a > b). If no paths match the requirements, the two
+ * paths are considered equivalent and this function returns 0.
+ *
+ * Examples:
+ *   mutt_inbox_cmp("/foo/bar",      "/foo/baz") --> 0
+ *   mutt_inbox_cmp("/foo/bar/",     "/foo/bar/inbox") --> 0
+ *   mutt_inbox_cmp("/foo/bar/sent", "/foo/bar/inbox") --> 1
+ */
+int mutt_inbox_cmp (const char *a, const char *b)
 {
   const char *a_end = strrchr (a, '/');
   const char *b_end = strrchr (b, '/');
@@ -1124,11 +1140,26 @@ int mutt_same_path (const char *a, const char *b)
 
   /* If neither path contains a '/' */
   if (!a_end)
-    return 1;
+    return 0;
 
-  /* Compare the paths */
+  /* Compare the subpaths */
   size_t a_len = a_end - a;
-  return ((a_len == (b_end - b)) && (mutt_strncasecmp (a, b, a_len) == 0));
+  size_t b_len = b_end - b;
+  size_t min = MIN(a_len, b_len);
+  int same = (a[min] == '/') && (b[min] == '/') &&
+             (a[min+1] != '\0') && (b[min+1] != '\0') &&
+             (mutt_strncasecmp(a, b, min) == 0);
+
+  if (!same)
+      return 0;
+
+  if (mutt_strcasecmp(&a[min+1], "inbox") == 0)
+      return -1;
+
+  if (mutt_strcasecmp(&b[min+1], "inbox") == 0)
+      return 1;
+
+  return 0;
 }
 
 char * strfcpy (char *dest, const char *src, size_t dlen)
@@ -1139,5 +1170,65 @@ char * strfcpy (char *dest, const char *src, size_t dlen)
 
   *dest = '\0';
   return dest0;
+}
+
+/**
+ * mutt_mkdir - Recursively create directories
+ * @path: Directories to create
+ * @mode: Permissions for final directory
+ * @return:
+ * *    0  Success
+ * *   -1  Error (errno set)
+ *
+ * Create a directory, creating the parents if necessary. (like mkdir -p)
+ *
+ * Note: The permissions are only set on the final directory.
+ *       The permissions of any parent directoies are determined by the umask.
+ *       (This is how "mkdir -p" behaves)
+ */
+int mutt_mkdir(const char *path, mode_t mode)
+{
+  if (!path || !*path)
+  {
+    errno = EINVAL;
+    return -1;
+  }
+
+  errno = 0;
+  char *p;
+  char _path[PATH_MAX];
+  const size_t len = strlen(path);
+
+  if (len >= sizeof(_path))
+  {
+    errno = ENAMETOOLONG;
+    return -1;
+  }
+
+  struct stat sb;
+  if ((stat(path, &sb) == 0) && S_ISDIR(sb.st_mode))
+    return 0;
+
+  /* Create a mutable copy */
+  strfcpy(_path, path, sizeof(_path));
+
+  for (p = _path + 1; *p; p++)
+  {
+    if (*p != '/')
+      continue;
+
+    /* Temporarily truncate the path */
+    *p = '\0';
+
+    if ((mkdir(_path, S_IRWXU | S_IRWXG | S_IRWXO) != 0) && (errno != EEXIST))
+      return -1;
+
+    *p = '/';
+  }
+
+  if ((mkdir(_path, mode) != 0) && (errno != EEXIST))
+    return -1;
+
+  return 0;
 }
 

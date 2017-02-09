@@ -49,11 +49,6 @@
 #include "makedoc-defs.h"
 
 #ifndef HAVE_STRERROR
-#ifndef STDC_HEADERS
-extern int sys_nerr;
-extern char *sys_errlist[];
-#endif
-
 #define strerror(x) ((x) > 0 && (x) < sys_nerr) ? sys_errlist[(x)] : 0
 #endif /* !HAVE_STRERROR */
 
@@ -358,7 +353,8 @@ enum
   DT_RX,
   DT_MAGIC,
   DT_SYN,
-  DT_ADDR
+  DT_ADDR,
+  DT_MBCHARTBL
 };
 
 struct 
@@ -379,6 +375,7 @@ types[] =
   { "DT_MAGIC",	"folder magic" },
   { "DT_SYN",	NULL },
   { "DT_ADDR",	"e-mail address" },
+  { "DT_MBCHARTBL", "string"	},
   { NULL, NULL }
 };
     
@@ -520,6 +517,7 @@ static void pretty_default (char *t, size_t l, const char *s, int type)
     case DT_RX:
     case DT_ADDR:
     case DT_PATH:
+    case DT_MBCHARTBL:
     {
       if (!strcmp (s, "0"))
 	break;
@@ -658,7 +656,8 @@ static void print_confline (const char *varname, int type, const char *val, FILE
     /* configuration file */
     case F_CONF:
     {
-      if (type == DT_STR || type == DT_RX || type == DT_ADDR || type == DT_PATH)
+      if (type == DT_STR || type == DT_RX || type == DT_ADDR || type == DT_PATH ||
+          type == DT_MBCHARTBL)
       {
 	fprintf (out, "\n# set %s=\"", varname);
 	conf_print_strval (val, out);
@@ -669,7 +668,8 @@ static void print_confline (const char *varname, int type, const char *val, FILE
       
       fprintf (out, "\n#\n# Name: %s", varname);
       fprintf (out, "\n# Type: %s", type2human (type));
-      if (type == DT_STR || type == DT_RX || type == DT_ADDR || type == DT_PATH)
+      if (type == DT_STR || type == DT_RX || type == DT_ADDR || type == DT_PATH ||
+          type == DT_MBCHARTBL)
       {
 	fputs ("\n# Default: \"", out);
 	conf_print_strval (val, out);
@@ -688,7 +688,8 @@ static void print_confline (const char *varname, int type, const char *val, FILE
       fprintf (out, "\n.TP\n.B %s\n", varname);
       fputs (".nf\n", out);
       fprintf (out, "Type: %s\n", type2human (type));
-      if (type == DT_STR || type == DT_RX || type == DT_ADDR || type == DT_PATH)
+      if (type == DT_STR || type == DT_RX || type == DT_ADDR || type == DT_PATH ||
+          type == DT_MBCHARTBL)
       {
 	fputs ("Default: \"", out);
 	man_print_strval (val, out);
@@ -715,7 +716,8 @@ static void print_confline (const char *varname, int type, const char *val, FILE
       fprintf (out, "</title>\n<literallayout>Type: %s", type2human (type));
 
       
-      if (type == DT_STR || type == DT_RX || type == DT_ADDR || type == DT_PATH)
+      if (type == DT_STR || type == DT_RX || type == DT_ADDR || type == DT_PATH ||
+          type == DT_MBCHARTBL)
       {
 	if (val && *val)
 	{

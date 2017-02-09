@@ -1309,7 +1309,7 @@ static int autoview_handler (BODY *a, STATE *s)
   FILE *fpin = NULL;
   FILE *fpout = NULL;
   FILE *fperr = NULL;
-  int piped = FALSE;
+  int piped = false;
   pid_t thepid;
   int rc = 0;
 
@@ -1629,7 +1629,7 @@ static int run_decode_and_handler (BODY *b, STATE *s, handler_t handler, int pla
 #ifdef USE_FMEMOPEN
      s->fpout = open_memstream (&temp, &tempsize);
      if (!s->fpout) {
-       mutt_error _("Unable to open memory stream!");
+       mutt_error (_("Unable to open memory stream!"));
        dprint (1, (debugfile, "Can't open memory stream.\n"));
        return -1;
      }

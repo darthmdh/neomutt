@@ -42,6 +42,22 @@
 #include "mutt_notmuch.h"
 #endif
 
+enum
+{
+  /* Indexing into the Flagchars variable ($flag_chars) */
+  FlagCharTagged,
+  FlagCharImportant,
+  FlagCharDeleted,
+  FlagCharDeletedAttach,
+  FlagCharReplied,
+  FlagCharOld,
+  FlagCharNew,
+  FlagCharOldThread,
+  FlagCharNewThread,
+  FlagCharSEmpty,
+  FlagCharZEmpty
+};
+
 int mutt_is_mail_list (ADDRESS *addr)
 {
   if (!mutt_match_rx_list (addr->mailbox, UnMailLists))
@@ -139,44 +155,6 @@ add_index_color (char *buf, size_t buflen, format_flag flags, char color)
   return 2;
 }
 
-/**
- * get_nth_wchar - Extract one char from a utf-8 string
- * @ustr:   Unicode string
- * @index:  Select this character
- * @return: String pointer to the character
- *
- * Extract one multi-byte character from a string.
- * If the (index < 0) the first character will be selected.
- * If the index is larger thant the string, then " " will be returned.
- * If the character selected is '\n' (Ctrl-M), then "" will be returned.
- *
- * Note: get_nth_wchar() may return a pointer to a static buffer.
- */
-char *get_nth_wchar (char *ustr, int index)
-{
-  static char buffer[5];
-  int clen = 0;
-  int i;
-
-  if (!*ustr)
-    return " ";
-
-  for (i = 0; i <= index; i++)
-  {
-    ustr += clen;
-    clen = mutt_charlen (ustr, NULL);
-    if (clen < 1)
-      return " ";
-  }
-
-  if ((clen == 1) && (ustr[0] == '\r'))
-    return "";
-
-  memcpy (buffer, ustr, clen);
-  buffer[clen] = 0;
-  return buffer;
-}
-
 enum FieldType
 {
   DISP_TO,
@@ -189,7 +167,7 @@ enum FieldType
 /**
  * make_from_prefix - Create a prefix for an author field
  * @disp:   Type of field
- * @return: Prefix string (do not free() it)
+ * @return: Prefix string (do not free it)
  *
  * If $from_chars is set, pick an appropriate character from it.
  * If not, use the default prefix: "To", "Cc", etc
@@ -205,14 +183,10 @@ static const char *make_from_prefix(enum FieldType disp)
     [DISP_FROM] = ""
   };
 
-  if (!Fromchars || (*Fromchars == '\0'))
+  if (!Fromchars || (disp >= Fromchars->len))
     return long_prefixes[disp];
 
-  char *prefix = get_nth_wchar (Fromchars, disp);
-  if (!prefix || (prefix[0] == '\0'))
-      return prefix;
-
-  snprintf (padded, sizeof(padded), "%s ", prefix);
+  snprintf (padded, sizeof(padded), "%s ", Fromchars->chars[disp]);
   return padded;
 }
 
@@ -351,6 +325,84 @@ int mutt_user_is_recipient (HEADER *h)
   return h->recipient;
 }
 
+/**
+ * get_initials - Turn a name into initials
+ * @name:   String to be converted
+ * @buf:    Buffer for the result
+ * @buflen: Size of the buffer
+ * @return: 1 on Success, 0 on Failure
+ *
+ * Take a name, e.g. "John F. Kennedy" and reduce it to initials "JFK".
+ * The function saves the first character from each word.  Words are delimited
+ * by whitespace, or hyphens (so "Jean-Pierre" becomes "JP").
+ */
+static int get_initials(const char *name, char *buf, int buflen)
+{
+  if (!name || !buf)
+    return 0;
+
+  while (*name)
+  {
+    /* Char's length in bytes */
+    int clen = mutt_charlen(name, NULL);
+    if (clen < 1)
+      return 0;
+
+    /* Ignore punctuation at the beginning of a word */
+    if ((clen == 1) && ispunct (*name))
+    {
+      name++;
+      continue;
+    }
+
+    if (clen >= buflen)
+      return 0;
+
+    /* Copy one multibyte character */
+    buflen -= clen;
+    while (clen--)
+      *buf++ = *name++;
+
+    /* Skip to end-of-word */
+    for (; *name; name += clen)
+    {
+      clen = mutt_charlen(name, NULL);
+      if (clen < 1)
+        return 0;
+      else if ((clen == 1) && (isspace(*name) || (*name == '-')))
+        break;
+    }
+
+    /* Skip any whitespace, or hyphens */
+    while (*name && (isspace(*name) || (*name == '-')))
+      name++;
+  }
+
+  *buf = 0;
+  return 1;
+}
+
+/**
+ * get_nth_wchar - Extract one char from a multi-byte table
+ * @table:  Multi-byte table
+ * @index:  Select this character
+ * @return: String pointer to the character
+ *
+ * Extract one multi-byte character from a string table.
+ * If the index is invalid, then a space character will be returned.
+ * If the character selected is '\n' (Ctrl-M), then "" will be returned.
+ */
+char *get_nth_wchar (mbchar_table *table, int index)
+{
+  if (!table || !table->chars || (index < 0) || (index >= table->len))
+    return " ";
+
+  if (table->chars[index][0] == '\n')
+	  return "";
+
+  return table->chars[index];
+}
+
 /* %a = address of author
  * %A = reply-to address (if present; otherwise: address of author
  * %b = filename of the originating folder
@@ -405,7 +457,8 @@ hdr_format_str (char *dest,
   struct hdr_format_info *hfi = (struct hdr_format_info *) data;
   HEADER *hdr, *htmp;
   CONTEXT *ctx;
-  char fmt[SHORT_STRING], buf2[LONG_STRING], ch, *p;
+  char fmt[SHORT_STRING], buf2[LONG_STRING], *p;
+  char *wch;
   int do_locales, i;
   int optional = (flags & MUTT_FORMAT_OPTIONAL);
   int threads = ((Sort & SORT_MASK) == SORT_THREADS);
@@ -418,18 +471,34 @@ hdr_format_str (char *dest,
   hdr = hfi->hdr;
   ctx = hfi->ctx;
 
+  if (!hdr || !hdr->env)
+    return src;
   dest[0] = 0;
   switch (op)
   {
     case 'A':
-      if(hdr->env->reply_to && hdr->env->reply_to->mailbox)
+    case 'I':
+      if (op == 'A')
       {
-        colorlen = add_index_color (dest, destlen, flags, MT_COLOR_INDEX_AUTHOR);
-        mutt_format_s (dest + colorlen, destlen - colorlen, prefix, mutt_addr_for_display (hdr->env->reply_to));
-        add_index_color (dest + colorlen, destlen - colorlen, flags, MT_COLOR_INDEX);
-	break;
+        if(hdr->env->reply_to && hdr->env->reply_to->mailbox)
+        {
+          colorlen = add_index_color (dest, destlen, flags, MT_COLOR_INDEX_AUTHOR);
+          mutt_format_s (dest + colorlen, destlen - colorlen, prefix, mutt_addr_for_display (hdr->env->reply_to));
+          add_index_color (dest + colorlen, destlen - colorlen, flags, MT_COLOR_INDEX);
+          break;
+        }
       }
-      /* fall through if 'A' returns nothing */
+      else
+      {
+        if (get_initials(mutt_get_name (hdr->env->from), buf2, sizeof (buf2)))
+        {
+          colorlen = add_index_color (dest, destlen, flags, MT_COLOR_INDEX_AUTHOR);
+          mutt_format_s (dest + colorlen, destlen - colorlen, prefix, buf2);
+          add_index_color (dest + colorlen, destlen - colorlen, flags, MT_COLOR_INDEX);
+          break;
+        }
+     }
+     /* fall through on failure */
 
     case 'a':
       colorlen = add_index_color (dest, destlen, flags, MT_COLOR_INDEX_AUTHOR);
@@ -742,28 +811,6 @@ hdr_format_str (char *dest,
       mutt_format_s (dest, destlen, prefix, hdr->env->message_id ? hdr->env->message_id : "<no.id>");
       break;
 
-    case 'I':
-      {
-	int iflag = FALSE;
-	int j = 0;
-
-	for (i = 0; hdr->env->from && hdr->env->from->personal &&
-		    hdr->env->from->personal[i] && (j < (SHORT_STRING - 1)); i++) {
-	  if (isalpha ((int) hdr->env->from->personal[i])) {
-	    if (!iflag) {
-	      buf2[j++] = hdr->env->from->personal[i];
-	      iflag = TRUE;
-	    }
-	  } else {
-	    iflag = FALSE;
-	  }
-	}
-
-	buf2[j] = '\0';
-      }
-      mutt_format_s (dest, destlen, prefix, buf2);
-      break;
-
     case 'l':
       if (!optional)
       {
@@ -906,26 +953,23 @@ hdr_format_str (char *dest,
 
     case 'S':
       if (hdr->deleted)
-	ch = 'D';
+        wch = get_nth_wchar (Flagchars, FlagCharDeleted);
       else if (hdr->attach_del)
-	ch = 'd';
+        wch = get_nth_wchar (Flagchars, FlagCharDeletedAttach);
       else if (hdr->tagged)
-	ch = '*';
+        wch = get_nth_wchar (Flagchars, FlagCharTagged);
       else if (hdr->flagged)
-	ch = '!';
+        wch = get_nth_wchar (Flagchars, FlagCharImportant);
       else if (hdr->replied)
-	ch = 'r';
+        wch = get_nth_wchar (Flagchars, FlagCharReplied);
       else if (hdr->read && (ctx && ctx->msgnotreadyet != hdr->msgno))
-	ch = '-';
+        wch = get_nth_wchar (Flagchars, FlagCharSEmpty);
       else if (hdr->old)
-	ch = 'O';
+        wch = get_nth_wchar (Flagchars, FlagCharOld);
       else
-	ch = 'N';
+        wch = get_nth_wchar (Flagchars, FlagCharNew);
 
-      /* FOO - this is probably unsafe, but we are not likely to have such
-	 a short string passed into this routine */
-      buf2[0] = ch;
-      buf2[1] = 0;
+      snprintf (buf2, sizeof (buf2), "%s", wch);
       colorlen = add_index_color (dest, destlen, flags, MT_COLOR_INDEX_FLAGS);
       mutt_format_s (dest + colorlen, destlen - colorlen, prefix, buf2);
       add_index_color (dest + colorlen, destlen - colorlen, flags, MT_COLOR_INDEX);
@@ -947,7 +991,7 @@ hdr_format_str (char *dest,
     case 'T':
       snprintf (fmt, sizeof (fmt), "%%%ss", prefix);
       snprintf (dest, destlen, fmt,
-		get_nth_wchar (Tochars, mutt_user_is_recipient (hdr)));
+		(Tochars && ((i = mutt_user_is_recipient (hdr))) < Tochars->len) ? Tochars->chars[i] : " ");
       break;
 
     case 'u':
@@ -996,26 +1040,57 @@ hdr_format_str (char *dest,
 #endif
 
     case 'Z':
-    
-      ch = ' ';
+      {
+        /* New/Old for threads; replied; New/Old for messages */
+        char *first;
+        if (THREAD_NEW)
+          first = get_nth_wchar (Flagchars, FlagCharNewThread);
+        else if (THREAD_OLD)
+          first = get_nth_wchar (Flagchars, FlagCharOldThread);
+        else if (hdr->read && (ctx && (ctx->msgnotreadyet != hdr->msgno)))
+        {
+          if (hdr->replied)
+            first = get_nth_wchar (Flagchars, FlagCharReplied);
+          else
+            first = get_nth_wchar (Flagchars, FlagCharZEmpty);
+        }
+        else
+        {
+          if (hdr->old)
+            first = get_nth_wchar (Flagchars, FlagCharOld);
+          else
+            first = get_nth_wchar (Flagchars, FlagCharNew);
+        }
 
-      if (WithCrypto && hdr->security & GOODSIGN)
-        ch = 'S';
-      else if (WithCrypto && hdr->security & ENCRYPT)
-      	ch = 'P';
-      else if (WithCrypto && hdr->security & SIGN)
-        ch = 's';
-      else if ((WithCrypto & APPLICATION_PGP) && hdr->security & PGPKEY)
-        ch = 'K';
+        /* Marked for deletion; deleted attachments; crypto */
+        char *second;
+        if (hdr->deleted)
+          second = get_nth_wchar (Flagchars, FlagCharDeleted);
+        else if (hdr->attach_del)
+          second = get_nth_wchar (Flagchars, FlagCharDeletedAttach);
+        else if (WithCrypto && (hdr->security & GOODSIGN))
+          second = "S";
+        else if (WithCrypto && (hdr->security & ENCRYPT))
+          second = "P";
+        else if (WithCrypto && (hdr->security & SIGN))
+          second = "s";
+        else if ((WithCrypto & APPLICATION_PGP) && (hdr->security & PGPKEY))
+          second = "K";
+        else
+          second = " ";
 
-      snprintf (buf2, sizeof (buf2),
-		"%c%c%s", (THREAD_NEW ? 'n' : (THREAD_OLD ? 'o' :
-		((hdr->read && (ctx && ctx->msgnotreadyet != hdr->msgno))
-		? (hdr->replied ? 'r' : ' ') : (hdr->old ? 'O' : 'N')))),
-		hdr->deleted ? 'D' : (hdr->attach_del ? 'd' : ch),
-		hdr->tagged ? "*" :
-		(hdr->flagged ? "!" :
-		 get_nth_wchar (Tochars, mutt_user_is_recipient (hdr))));
+        /* Tagged, flagged and recipient flag */
+        char *third;
+        if (hdr->tagged)
+          third = get_nth_wchar (Flagchars, FlagCharTagged);
+        else if (hdr->flagged)
+          third = get_nth_wchar (Flagchars, FlagCharImportant);
+        else
+          third = get_nth_wchar (Tochars, mutt_user_is_recipient (hdr));
+
+        snprintf (buf2, sizeof (buf2), "%s%s%s", first, second, third);
+      }
+
       colorlen = add_index_color (dest, destlen, flags, MT_COLOR_INDEX_FLAGS);
       mutt_format_s (dest + colorlen, destlen - colorlen, prefix, buf2);
       add_index_color (dest + colorlen, destlen - colorlen, flags, MT_COLOR_INDEX);

@@ -34,6 +34,7 @@
 #include <time.h>
 #include <limits.h>
 #include <stdarg.h>
+#include <stdbool.h>
 #include <signal.h>
 /* On OS X 10.5.x, wide char functions are inlined by default breaking
  * --without-wc-funcs compilation
@@ -57,12 +58,21 @@
 #define PATH_MAX _POSIX_PATH_MAX
 #endif
 
+#include <libgen.h>
 #include <pwd.h>
 #include <grp.h>
 
 #include "rfc822.h"
 #include "hash.h"
 #include "charset.h"
+
+#ifndef __bool_true_false_are_defined
+# define boot int
+# define _Bool int
+# define false 0
+# define true (!false)
+# define __bool_true_false_are_defined 1
+#endif
 
 #ifndef HAVE_WC_FUNCS
 # ifdef MB_LEN_MAX
@@ -123,12 +133,6 @@ typedef struct
   size_t dsize;	/* length of data */
   int destroy;	/* destroy `data' when done? */
 } BUFFER;
-
-typedef struct
-{
-  int ch; /* raw key pressed */
-  int op; /* function op */
-} event_t;
 
 /* flags for _mutt_system() */
 #define MUTT_DETACH_PROCESS	1	/* detach subprocess from group */
@@ -514,6 +518,7 @@ enum
   OPTTILDE,
   OPTTSENABLED,
   OPTUNCOLLAPSEJUMP,
+  OPTUNCOLLAPSENEW,
   OPTUSE8BITMIME,
   OPTUSEDOMAIN,
   OPTUSEFROM,
@@ -635,6 +640,8 @@ typedef struct list_t
   struct list_t *next;
 } LIST;
 
+typedef struct list_t HEAP;
+
 typedef struct rx_list_t
 {
   REGEXP *rx;
@@ -649,20 +656,44 @@ typedef struct spam_list_t
   struct spam_list_t *next;
 } SPAM_LIST;
 
-#define mutt_new_list() safe_calloc (1, sizeof (LIST))
-#define mutt_new_rx_list() safe_calloc (1, sizeof (RX_LIST))
-#define mutt_new_spam_list() safe_calloc (1, sizeof (SPAM_LIST))
+inline LIST *mutt_new_list()
+{
+  return safe_calloc (1, sizeof (LIST));
+}
+
+inline HEAP *mutt_new_heap()
+{
+  return safe_calloc (1, sizeof (HEAP));
+}
+
+inline RX_LIST *mutt_new_rx_list()
+{
+  return safe_calloc (1, sizeof (RX_LIST));
+}
+
+inline SPAM_LIST *mutt_new_spam_list()
+{
+  return safe_calloc (1, sizeof (SPAM_LIST));
+}
+
 void mutt_free_list (LIST **);
 void mutt_free_rx_list (RX_LIST **);
 void mutt_free_spam_list (SPAM_LIST **);
 LIST *mutt_copy_list (LIST *);
-int mutt_matches_ignore (const char *, LIST *);
+int mutt_matches_ignore (const char *);
+int mutt_matches_list (const char *, LIST *);
 
 /* add an element to a list */
 LIST *mutt_add_list (LIST *, const char *);
 LIST *mutt_add_list_n (LIST*, const void *, size_t);
 LIST *mutt_find_list (LIST *, const char *);
 int mutt_remove_from_rx_list (RX_LIST **l, const char *str);
+
+/* handle heap */
+void mutt_push_heap(HEAP **head, const char *data);
+int mutt_pop_heap(HEAP **head);
+const char *mutt_front_heap(HEAP *head);
+HEAP *mutt_find_heap(HEAP *head, const char *data);
 
 void mutt_init (int, LIST *);
 
@@ -713,12 +744,22 @@ typedef struct envelope
   unsigned int refs_changed : 1; /* References changed to break thread */
 } ENVELOPE;
 
+inline ENVELOPE *mutt_new_envelope()
+{
+    return safe_calloc (1, sizeof (ENVELOPE));
+}
+
 typedef struct parameter
 {
   char *attribute;
   char *value;
   struct parameter *next;
 } PARAMETER;
+
+inline PARAMETER *mutt_new_parameter()
+{
+    return safe_calloc (1, sizeof (PARAMETER));
+}
 
 /* Information that helps in determing the Content-* of an attachment */
 typedef struct content
@@ -899,6 +940,11 @@ typedef struct header
   char *maildir_flags;		/* unknown maildir flags */
 } HEADER;
 
+inline HEADER *mutt_new_header()
+{
+    return safe_calloc (1, sizeof (HEADER));
+}
+
 struct mutt_thread
 {
   unsigned int fake_thread : 1;
@@ -1003,6 +1049,8 @@ struct mx_ops
   int (*open_new_msg) (struct _message *, struct _context *, HEADER *);
 };
 
+#include "mutt_menu.h"
+
 typedef struct _context
 {
   char *path;
@@ -1030,6 +1078,8 @@ typedef struct _context
   int deleted;			/* how many deleted messages */
   int flagged;			/* how many flagged messages */
   int msgnotreadyet;		/* which msg "new" in pager, -1 if none */
+
+  MUTTMENU *menu;               /* needed for pattern compilation */
 
   short magic;			/* mailbox type */
 
@@ -1074,6 +1124,11 @@ typedef struct
   int	 tabs;
 } ENTER_STATE;
 
+inline ENTER_STATE *mutt_new_enter_state()
+{
+    return safe_calloc (1, sizeof (ENTER_STATE));
+}
+
 /* flags for the STATE struct */
 #define MUTT_DISPLAY       (1<<0) /* output is displayed to the user */
 #define MUTT_VERIFY        (1<<1) /* perform signature verification */
@@ -1105,6 +1160,18 @@ typedef struct
   regex_t minor_rx;
 } ATTACH_MATCH;
 
+/* multibyte character table.
+ * Allows for direct access to the individual multibyte characters in a
+ * string.  This is used for the Flagchars, Fromchars, StChars and Tochars
+ * option types. */
+typedef struct
+{
+  int len;               /* number of characters */
+  char **chars;          /* the array of multibyte character strings */
+  char *segmented_str;   /* each chars entry points inside this string */
+  char *orig_str;
+} mbchar_table;
+
 #define MUTT_PARTS_TOPLEVEL	(1<<0)	/* is the top-level part */
 
 #include "ascii.h"
@@ -1113,3 +1180,7 @@ typedef struct
 #include "globals.h"
 
 #endif /*MUTT_H*/
+
+
+
+

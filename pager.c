@@ -1287,11 +1287,11 @@ static int format_line (struct line_t **lineInfo, int n, unsigned char *buf,
       last_special = special;
     }
 
-    if (IsWPrint (wc) || (Charset_is_utf8 && wc == 0x00A0))
+    if (IsWPrint (wc) || (Charset_is_utf8 && (wc == 0x00A0 || wc == 0x202F)))
     {
       if (wc == ' ')
 	space = ch;
-      else if (Charset_is_utf8 && wc == 0x00A0)
+      else if (Charset_is_utf8 && (wc == 0x00A0 || wc == 0x202F))
       {
 	/* Convert non-breaking space to normal space. The local variable
 	 * `space' is not set here so that the caller of this function won't
@@ -2018,7 +2018,9 @@ mutt_pager (const char *banner, const char *fname, int flags, pager_t *extra)
       
     ch = km_dokey (MENU_PAGER);
     if (ch != -1)
+    {
       mutt_clear_error ();
+    }
     mutt_curs_set (1);
 
     int do_new_mail = 0;
@@ -2050,7 +2052,7 @@ mutt_pager (const char *banner, const char *fname, int flags, pager_t *extra)
 
 	    if (h && (h->read == 0))
 	    {
-	      mutt_message _("New mail in this mailbox.");
+	      mutt_message (_("New mail in this mailbox."));
 	      do_new_mail = 1;
 	      break;
 	    }
@@ -2151,13 +2153,14 @@ mutt_pager (const char *banner, const char *fname, int flags, pager_t *extra)
       }
 
       SigWinch = 0;
-      clearok(stdscr,TRUE);/*force complete redraw*/
+      clearok(stdscr,true);/*force complete redraw*/
       continue;
     }
 #endif
     else if (ch == -1)
     {
       ch = 0;
+      mutt_timeout_hook();
       continue;
     }
 
@@ -2545,7 +2548,7 @@ search_next:
 	break;
 
       case OP_REDRAW:
-	clearok (stdscr, TRUE);
+	clearok (stdscr, true);
 	redraw = REDRAW_FULL;
 	break;
 
@@ -3078,7 +3081,7 @@ search_next:
           mutt_message ("%d label%s changed.", rc, rc == 1 ? "" : "s");
         }
         else {
-          mutt_message _("No labels changed.");
+          mutt_message (_("No labels changed."));
         }
         break;
 

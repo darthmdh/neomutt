@@ -32,6 +32,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+extern char **envlist;
+
 int _mutt_system (const char *cmd, int flags)
 {
   int rc = -1;
@@ -114,7 +116,7 @@ int _mutt_system (const char *cmd, int flags)
     sigaction (SIGTSTP, &act, NULL);
     sigaction (SIGCONT, &act, NULL);
 
-    execl (EXECSHELL, "sh", "-c", cmd, NULL);
+    execle (EXECSHELL, "sh", "-c", cmd, NULL, envlist);
     _exit (127); /* execl error */
   }
   else if (thepid != -1)
@@ -127,8 +129,11 @@ int _mutt_system (const char *cmd, int flags)
 #endif
   }
 
-  sigaction (SIGCONT, &oldcont, NULL);
-  sigaction (SIGTSTP, &oldtstp, NULL);
+  if (!(flags & MUTT_DETACH_PROCESS))
+  {
+    sigaction (SIGCONT, &oldcont, NULL);
+    sigaction (SIGTSTP, &oldtstp, NULL);
+  }
 
   /* reset SIGINT, SIGQUIT and SIGCHLD */
   mutt_unblock_signals_system (1);

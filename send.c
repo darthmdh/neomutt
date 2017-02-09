@@ -683,7 +683,7 @@ void mutt_make_misc_reply_headers (ENVELOPE *env, CONTEXT *ctx,
     sprintf (env->subject, "Re: %s", curenv->real_subj);	/* __SPRINTF_CHECKED__ */
   }
   else if (!env->subject)
-    env->subject = safe_strdup ("Re: your mail");
+    env->subject = safe_strdup (EmptySubject);
 }
 
 void mutt_add_to_reference_headers (ENVELOPE *env, ENVELOPE *curenv, LIST ***pp, LIST ***qq)
@@ -1223,6 +1223,8 @@ int mutt_resend_message (FILE *fp, CONTEXT *ctx, HEADER *cur)
 
 static int is_reply (HEADER *reply, HEADER *orig)
 {
+  if (!reply || !reply->env || !orig || !orig->env)
+    return 0;
   return mutt_find_list (orig->env->references, reply->env->message_id) ||
          mutt_find_list (orig->env->in_reply_to, reply->env->message_id);
 }
@@ -1790,7 +1792,7 @@ main_loop:
       /* abort */
 #ifdef USE_NNTP
       if (flags & SENDNEWS)
-	mutt_message _("Article not posted.");
+	mutt_message (_("Article not posted."));
       else
 #endif
       mutt_message _("Mail not sent.");
@@ -1889,13 +1891,13 @@ main_loop:
 #ifdef USE_NNTP
   if ((flags & SENDNEWS) && !msg->env->subject)
   {
-    mutt_error _("No subject specified.");
+    mutt_error (_("No subject specified."));
     goto main_loop;
   }
 
   if ((flags & SENDNEWS) && !msg->env->newsgroups)
   {
-    mutt_error _("No newsgroup specified.");
+    mutt_error (_("No newsgroup specified."));
     goto main_loop;
   }
 #endif
@@ -1908,7 +1910,7 @@ main_loop:
     /* if the abort is automatic, print an error message */
     if (quadoption (OPT_ATTACH) == MUTT_YES)
     {
-      mutt_error _("Message contains text matching \"$attach_keyword\". Not sending.");
+      mutt_error (_("Message contains text matching \"$attach_keyword\". Not sending."));
     }
     goto main_loop;
   }

@@ -70,6 +70,8 @@
 #include "nntp.h"
 #endif
 
+char **envlist;
+
 void mutt_exit (int code)
 {
   mutt_endwin (NULL);
@@ -87,7 +89,7 @@ static void mutt_usage (void)
        mutt [<options>] -p\n\
        mutt [<options>] -A <alias> [...]\n\
        mutt [<options>] -Q <query> [...]\n\
-       mutt [<options>] -D\n\
+       mutt [<options>] -D [-S]\n\
        mutt -v[v]\n");
 
   puts _("\
@@ -97,7 +99,8 @@ options:\n\
 \t\tthe list of files must be terminated with the \"--\" sequence\n\
   -b <address>\tspecify a blind carbon-copy (BCC) address\n\
   -c <address>\tspecify a carbon-copy (CC) address\n\
-  -D\t\tprint the value of all variables to stdout");
+  -D\t\tprint the value of all variables to stdout\n\
+  -D -S\t\tlike -D, but hide the value of sensitive variables");
 #if DEBUG
   puts _("  -d <level>\tlog debugging output to ~/.muttdebug0");
 #endif
@@ -154,7 +157,7 @@ static void start_curses (void)
   mutt_signal_init ();
 #endif
   ci_start_color ();
-  keypad (stdscr, TRUE);
+  keypad (stdscr, true);
   cbreak ();
   noecho ();
   nonl ();
@@ -162,7 +165,7 @@ static void start_curses (void)
   typeahead (-1);       /* simulate smooth scrolling */
 #endif
 #if HAVE_META
-  meta (stdscr, TRUE);
+  meta (stdscr, true);
 #endif
 init_extended_keys();
   mutt_reflow_windows ();
@@ -177,7 +180,7 @@ init_extended_keys();
 #define MUTT_NEWS    (1<<5)	/* -g and -G */
 #endif
 
-int main (int argc, char **argv)
+int main (int argc, char **argv, char **environ)
 {
   char folder[_POSIX_PATH_MAX] = "";
   char *subject = NULL;
@@ -195,6 +198,7 @@ int main (int argc, char **argv)
   int i;
   int explicit_folder = 0;
   int dump_variables = 0;
+  int hide_sensitive = 0;
   int edit_infile = 0;
   extern char *optarg;
   extern int optind;
@@ -225,6 +229,17 @@ int main (int argc, char **argv)
   memset (Options, 0, sizeof (Options));
   memset (QuadOptions, 0, sizeof (QuadOptions));
 
+  /* Init envlist */
+  {
+    char **srcp, **dstp;
+    int count = 0;
+    for (srcp = environ; srcp && *srcp; srcp++)
+      count++;
+    envlist = safe_calloc(count+1, sizeof(char *));
+    for (srcp = environ, dstp = envlist; srcp && *srcp; srcp++, dstp++)
+      *dstp = safe_strdup(*srcp);
+  }
+
   for (optind = 1; optind < double_dash; )
   {
     /* We're getopt'ing POSIXLY, so we'll be here every time getopt()
@@ -249,9 +264,9 @@ int main (int argc, char **argv)
     }
 
 #ifdef USE_NNTP
-    if ((i = getopt (argc, argv, "+A:a:b:F:f:c:Dd:Ee:g:GH:s:i:hm:npQ:RvxyzZ")) != EOF)
+    if ((i = getopt (argc, argv, "+A:a:b:F:f:c:Dd:Ee:g:GH:s:i:hm:npQ:RSvxyzZ")) != EOF)
 #else
-    if ((i = getopt (argc, argv, "+A:a:b:F:f:c:Dd:Ee:H:s:i:hm:npQ:RvxyzZ")) != EOF)
+    if ((i = getopt (argc, argv, "+A:a:b:F:f:c:Dd:Ee:H:s:i:hm:npQ:RSvxyzZ")) != EOF)
 #endif
       switch (i)
       {
@@ -263,7 +278,8 @@ int main (int argc, char **argv)
 	break;
 
       case 'F':
-	mutt_str_replace (&Muttrc, optarg);
+        // mutt_str_replace (&Muttrc, optarg);
+        Muttrc = mutt_add_list (Muttrc, optarg);
 	break;
 
       case 'f':
@@ -335,6 +351,10 @@ int main (int argc, char **argv)
       
       case 'R':
 	flags |= MUTT_RO; /* read-only mode */
+	break;
+
+      case 'S':
+	hide_sensitive = 1;
 	break;
 
       case 's':
@@ -436,7 +456,7 @@ int main (int argc, char **argv)
     return mutt_query_variables (queries);
   }
   if (dump_variables)
-    return mutt_dump_variables();
+    return mutt_dump_variables(hide_sensitive);
 
   if (alias_queries)
   {

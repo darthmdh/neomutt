@@ -170,6 +170,7 @@ typedef struct
 {
   /* This data is specific to a CONNECTION to an IMAP server */
   CONNECTION *conn;
+  unsigned char recovering;
   unsigned char state;
   unsigned char status;
   /* let me explain capstr: SASL needs the capability string (not bits).
@@ -226,11 +227,9 @@ typedef struct
 } IMAP_DATA;
 /* I wish that were called IMAP_CONTEXT :( */
 
-/* -- macros -- */
-#define CTX_DATA ((IMAP_DATA *) ctx->data)
-
 /* -- private IMAP functions -- */
 /* imap.c */
+int imap_check (IMAP_DATA* idata, int force);
 int imap_create_mailbox (IMAP_DATA* idata, char* mailbox);
 int imap_rename_mailbox (IMAP_DATA* idata, IMAP_MBOX* mx, const char* newname);
 IMAP_STATUS* imap_mboxcache_get (IMAP_DATA* idata, const char* mbox,

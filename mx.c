@@ -672,7 +672,7 @@ CONTEXT *mx_open_mailbox (const char *path, int flags, CONTEXT *pctx)
 
   rc = ctx->mx_ops->open(ctx);
 
-  if (rc == 0)
+  if ((rc == 0) || (rc == -2))
   {
     if ((flags & MUTT_NOSORT) == 0)
     {
@@ -684,6 +684,8 @@ CONTEXT *mx_open_mailbox (const char *path, int flags, CONTEXT *pctx)
     }
     if (!ctx->quiet)
       mutt_clear_error ();
+    if (rc == -2)
+      mutt_error(_("Reading from %s interrupted..."), ctx->path);
   }
   else
   {
@@ -1016,7 +1018,7 @@ int mx_close_mailbox (CONTEXT *ctx, int *index_hint)
   /* allow IMAP to preserve the deleted flag across sessions */
   if (ctx->magic == MUTT_IMAP)
   {
-    if ((check = imap_sync_mailbox (ctx, purge, index_hint)) != 0)
+    if ((check = imap_sync_mailbox (ctx, purge)) != 0)
     {
       ctx->closing = 0;
       return check;
@@ -1240,7 +1242,7 @@ int mx_sync_mailbox (CONTEXT *ctx, int *index_hint)
 
 #ifdef USE_IMAP
   if (ctx->magic == MUTT_IMAP)
-    rc = imap_sync_mailbox (ctx, purge, index_hint);
+    rc = imap_sync_mailbox (ctx, purge);
   else
 #endif
     rc = sync_mailbox (ctx, index_hint);
@@ -1401,6 +1403,8 @@ int mx_commit_message (MESSAGE *msg, CONTEXT *ctx)
 /* close a pointer to a message */
 int mx_close_message (CONTEXT *ctx, MESSAGE **msg)
 {
+  if (!ctx || !msg)
+    return 0;
   int r = 0;
 
   if (ctx->mx_ops && ctx->mx_ops->close_msg)

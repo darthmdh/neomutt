@@ -64,7 +64,7 @@
 static int nntp_connect_error (NNTP_SERVER *nserv)
 {
   nserv->status = NNTP_NONE;
-  mutt_error _("Server closed connection!");
+  mutt_error (_("Server closed connection!"));
   mutt_sleep (2);
   return -1;
 }
@@ -163,7 +163,7 @@ static int nntp_capabilities (NNTP_SERVER *nserv)
 
   mutt_socket_close (conn);
   nserv->status = NNTP_BYE;
-  mutt_error _("Server doesn't support reader mode.");
+  mutt_error (_("Server doesn't support reader mode."));
   mutt_sleep (2);
   return -1;
 }
@@ -338,7 +338,7 @@ static int nntp_auth (NNTP_SERVER *nserv)
     p = authenticators;
     while (*p)
     {
-      *p = ascii_toupper (*p);
+      *p = toupper (*p);
       p++;
     }
 
@@ -349,7 +349,7 @@ static int nntp_auth (NNTP_SERVER *nserv)
     {
       if (!a)
       {
-	mutt_error _("No authenticators available");
+	mutt_error (_("No authenticators available"));
 	mutt_sleep (2);
 	break;
       }
@@ -592,7 +592,7 @@ static int nntp_auth (NNTP_SERVER *nserv)
   conn->account.flags = flags;
   if (conn->fd < 0)
   {
-    mutt_error _("Server closed connection!");
+    mutt_error (_("Server closed connection!"));
     mutt_sleep (2);
   }
   else
@@ -651,7 +651,7 @@ int nntp_open_connection (NNTP_SERVER *nserv)
     else if (nserv->hasCAPABILITIES)
     {
       mutt_socket_close (conn);
-      mutt_error _("Could not switch to reader mode.");
+      mutt_error (_("Could not switch to reader mode."));
       mutt_sleep (2);
       return -1;
     }
@@ -693,7 +693,7 @@ int nntp_open_connection (NNTP_SERVER *nserv)
 	nserv->use_tls = 0;
 	nserv->status = NNTP_NONE;
 	mutt_socket_close (nserv->conn);
-	mutt_error _("Could not negotiate TLS connection");
+	mutt_error (_("Could not negotiate TLS connection"));
 	mutt_sleep (2);
 	return -1;
       }
@@ -736,7 +736,7 @@ int nntp_open_connection (NNTP_SERVER *nserv)
     if (cap > 0)
     {
       mutt_socket_close (conn);
-      mutt_error _("Could not switch to reader mode.");
+      mutt_error (_("Could not switch to reader mode."));
       mutt_sleep (2);
       return -1;
     }
@@ -819,7 +819,7 @@ static int nntp_query (NNTP_DATA *nntp_data, char *line, size_t linelen)
 static int nntp_fetch_lines (NNTP_DATA *nntp_data, char *query, size_t qlen,
 			char *msg, int (*funct) (char *, void *), void *data)
 {
-  int done = FALSE;
+  int done = false;
   int rc;
 
   while (!done)
@@ -861,7 +861,7 @@ static int nntp_fetch_lines (NNTP_DATA *nntp_data, char *query, size_t qlen,
       {
 	if (buf[1] == '\0')
 	{
-	  done = TRUE;
+	  done = true;
 	  break;
 	}
 	if (buf[1] == '.')
@@ -1216,7 +1216,7 @@ static int nntp_fetch_headers (CONTEXT *ctx, void *hc,
       !nntp_data->deleted)
   {
     if (!ctx->quiet)
-      mutt_message _("Fetching list of articles...");
+      mutt_message (_("Fetching list of articles..."));
     if (nntp_data->nserv->hasLISTGROUPrange)
       snprintf (buf, sizeof (buf), "LISTGROUP %s %d-%d\r\n", nntp_data->group,
 		first, last);
@@ -1975,7 +1975,7 @@ int nntp_check_mailbox (CONTEXT *ctx, int *index_hint)
   if (nserv->check_time + NewsPollTimeout > now)
     return 0;
 
-  mutt_message _("Checking for new messages...");
+  mutt_message (_("Checking for new messages..."));
   if (nntp_newsrc_parse (nserv) < 0)
     return -1;
 
@@ -2192,7 +2192,7 @@ int nntp_check_new_groups (NNTP_SERVER *nserv)
   char buf[LONG_STRING];
   char *msg = _("Checking for new newsgroups...");
   unsigned int i;
-  int rc, update_active = FALSE;
+  int rc, update_active = false;
 
   if (!nserv || !nserv->newgroups_time)
     return -1;
@@ -2200,7 +2200,7 @@ int nntp_check_new_groups (NNTP_SERVER *nserv)
   /* check subscribed newsgroups for new articles */
   if (option (OPTSHOWNEWNEWS))
   {
-    mutt_message _("Checking for new messages...");
+    mutt_message (_("Checking for new messages..."));
     for (i = 0; i < nserv->groups_num; i++)
     {
       NNTP_DATA *nntp_data = nserv->groups_list[i];
@@ -2211,7 +2211,7 @@ int nntp_check_new_groups (NNTP_SERVER *nserv)
 	if (rc < 0)
 	  return -1;
 	if (rc > 0)
-	  update_active = TRUE;
+	  update_active = true;
       }
     }
     /* select current newsgroup */
@@ -2274,7 +2274,7 @@ int nntp_check_new_groups (NNTP_SERVER *nserv)
 	mutt_progress_update (&progress, ++count, -1);
       }
     }
-    update_active = TRUE;
+    update_active = true;
     rc = 1;
   }
   if (update_active)
@@ -2415,7 +2415,7 @@ int nntp_check_children (CONTEXT *ctx, const char *msgid)
       if (mutt_strncmp ("500", buf, 3))
 	mutt_error ("XPAT: %s", buf);
       else
-	mutt_error _("Unable to find child articles because server does not support XPAT command.");
+	mutt_error (_("Unable to find child articles because server does not support XPAT command."));
     }
     return -1;
   }

@@ -31,6 +31,10 @@
 #include "sort.h"
 #include "sidebar.h"
 
+#ifdef USE_NOTMUCH
+#include "mutt_notmuch.h"
+#endif
+
 /* Previous values for some sidebar config */
 static short PreviousSort = SORT_ORDER;  /* sidebar_sort_method */
 
@@ -317,10 +321,9 @@ static int cb_qsort_sbe (const void *a, const void *b)
       break;
     case SORT_PATH:
     {
-      int same_path = mutt_same_path (b1->path, b2->path);
-      result = (same_path && mutt_is_inbox (b1->path)) ? -1 :
-               (same_path && mutt_is_inbox (b2->path)) ?  1 :
-               mutt_strcoll (b1->path, b2->path);           
+      result = mutt_inbox_cmp (b1->path, b2->path);
+      if (result == 0)
+        result = mutt_strcoll (b1->path, b2->path);
       break;
     }
   }
@@ -532,7 +535,7 @@ static int prepare_sidebar (int page_size)
  */
 static int draw_divider (int num_rows, int num_cols)
 {
-  if ((num_rows < 1) || (num_rows < 1))
+  if ((num_rows < 1) || (num_cols < 1))
     return 0;
 
   int i;
@@ -681,13 +684,13 @@ static void draw_sidebar (int num_rows, int num_cols, int div_width)
     }
     else if (entryidx == HilIndex)
       SETCOLOR(MT_COLOR_HIGHLIGHT);
-    else if ((ColorDefs[MT_COLOR_SB_SPOOLFILE] != 0) &&
-               (mutt_strcmp (b->path, Spoolfile) == 0))
-      SETCOLOR(MT_COLOR_SB_SPOOLFILE);
     else if ((b->msg_unread > 0) || (b->new))
       SETCOLOR(MT_COLOR_NEW);
     else if (b->msg_flagged > 0)
       SETCOLOR(MT_COLOR_FLAGGED);
+    else if ((ColorDefs[MT_COLOR_SB_SPOOLFILE] != 0) &&
+               (mutt_strcmp (b->path, Spoolfile) == 0))
+      SETCOLOR(MT_COLOR_SB_SPOOLFILE);
     else
     {
       if (ColorDefs[MT_COLOR_ORDINARY] != 0)
@@ -704,8 +707,15 @@ static void draw_sidebar (int num_rows, int num_cols, int div_width)
     if (Context && Context->realpath &&
         !mutt_strcmp (b->realpath, Context->realpath))
     {
-      b->msg_unread  = Context->unread;
-      b->msg_count   = Context->msgcount;
+#ifdef USE_NOTMUCH
+      if (b->magic == MUTT_NOTMUCH)
+        nm_nonctx_get_count(b->realpath, &b->msg_count, &b->msg_unread);
+      else
+#endif
+      {
+        b->msg_unread  = Context->unread;
+        b->msg_count   = Context->msgcount;
+      }
       b->msg_flagged = Context->flagged;
     }
 

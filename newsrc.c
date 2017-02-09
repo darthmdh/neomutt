@@ -554,7 +554,7 @@ static int active_get_cache (NNTP_SERVER *nserv)
   }
   nserv->newgroups_time = t;
 
-  mutt_message _("Loading list of groups from cache...");
+  mutt_message (_("Loading list of groups from cache..."));
   while (fgets (buf, sizeof (buf), fp))
     nntp_add_group (buf, nserv);
   nntp_add_group (NULL, NULL);
@@ -872,7 +872,6 @@ NNTP_SERVER *nntp_select_server (char *server, int leave_lock)
   char file[_POSIX_PATH_MAX];
   char *p;
   int rc;
-  struct stat sb;
   ACCOUNT acct;
   NNTP_SERVER *nserv;
   NNTP_DATA *nntp_data;
@@ -881,7 +880,7 @@ NNTP_SERVER *nntp_select_server (char *server, int leave_lock)
 
   if (!server || !*server)
   {
-    mutt_error _("No news server defined!");
+    mutt_error (_("No news server defined!"));
     mutt_sleep (2);
     return NULL;
   }
@@ -956,26 +955,12 @@ NNTP_SERVER *nntp_select_server (char *server, int leave_lock)
   if (rc >= 0 && NewsCacheDir && *NewsCacheDir)
   {
     cache_expand (file, sizeof (file), &conn->account, NULL);
-    p = *file == '/' ? file + 1 : file;
-    while (1)
+    if (mutt_mkdir (file, S_IRWXU) < 0)
     {
-      p = strchr (p, '/');
-      if (p)
-	*p = '\0';
-      if ((stat (file, &sb) || (sb.st_mode & S_IFDIR) == 0) &&
-	  mkdir (file, 0700))
-      {
-	mutt_error (_("Can't create %s: %s."), file, strerror (errno));
-	mutt_sleep (2);
-	break;
-      }
-      if (!p)
-      {
-	nserv->cacheable = 1;
-	break;
-      }
-      *p++ = '/';
+      mutt_error (_("Can't create %s: %s."), file, strerror (errno));
+      mutt_sleep (2);
     }
+    nserv->cacheable = 1;
   }
 
   /* load .newsrc */

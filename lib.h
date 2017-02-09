@@ -35,6 +35,7 @@
 # include <time.h>
 # include <limits.h>
 # include <stdarg.h>
+# include <stdbool.h>
 # include <signal.h>
 
 # ifndef _POSIX_PATH_MAX
@@ -53,9 +54,6 @@
 #  define _(a) (a)
 #  define N_(a) a
 # endif
-
-# define TRUE 1
-# define FALSE 0
 
 # define HUGE_STRING     8192
 # define LONG_STRING     1024
@@ -82,6 +80,10 @@
 # undef MIN
 # define MAX(a,b) ((a) < (b) ? (b) : (a))
 # define MIN(a,b) ((a) < (b) ? (a) : (b))
+
+/* Use this with care.  If the compiler can't see the array
+ * definition, it obviously won't produce a correct result. */
+#define mutt_array_size(x)  (sizeof (x) / sizeof ((x)[0]))
 
 /* For mutt_format_string() justifications */
 /* Making left 0 and center -1 is of course completely nonsensical, but
@@ -208,6 +210,7 @@ int safe_symlink (const char *, const char *);
 int safe_fclose (FILE **);
 int safe_fsync_close (FILE **);
 int mutt_rmtree (const char *);
+int mutt_mkdir(const char *path, mode_t mode);
 
 size_t mutt_quote_filename (char *, size_t, const char *);
 size_t mutt_strlen (const char *);
@@ -222,8 +225,7 @@ void mutt_str_adjust (char **p);
 void mutt_unlink (const char *);
 void safe_free (void *);
 void safe_realloc (void *, size_t);
-int  mutt_is_inbox (const char *path);
-int  mutt_same_path (const char *a, const char *b);
+int  mutt_inbox_cmp (const char *a, const char *b);
 
 const char *mutt_strsysexit(int e);
 #endif

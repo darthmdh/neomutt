@@ -231,7 +231,7 @@ short mutt_ts_capability(void)
   /* If XT (boolean) is set, then this terminal supports the standard escape. */
   /* Beware: tigetflag returns -1 if XT is invalid or not a boolean. */
 #ifdef HAVE_USE_EXTENDED_NAMES
-  use_extended_names (TRUE);
+  use_extended_names (true);
   tcapi = tigetflag("XT");
   if (tcapi == 1)
     return 1;
@@ -481,10 +481,10 @@ void update_index (MUTTMENU *menu, CONTEXT *ctx, int check,
   }
 
   /* save the list of new messages */
-  if (oldcount && check != MUTT_REOPENED
+  if (option(OPTUNCOLLAPSENEW) && oldcount && check != MUTT_REOPENED
       && ((Sort & SORT_MASK) == SORT_THREADS))
   {
-    save_new = (HEADER **) safe_malloc (sizeof (HEADER *) * (ctx->msgcount - oldcount));
+    save_new = safe_malloc (sizeof (HEADER *) * (ctx->msgcount - oldcount));
     for (j = oldcount; j < ctx->msgcount; j++)
       save_new[j-oldcount] = ctx->hdrs[j];
   }
@@ -493,7 +493,7 @@ void update_index (MUTTMENU *menu, CONTEXT *ctx, int check,
   mutt_sort_headers (ctx, (check == MUTT_REOPENED));
 
   /* uncollapse threads with new mail */
-  if ((Sort & SORT_MASK) == SORT_THREADS)
+  if (option(OPTUNCOLLAPSENEW) && ((Sort & SORT_MASK) == SORT_THREADS))
   {
     if (check == MUTT_REOPENED)
     {
@@ -880,6 +880,9 @@ int mutt_index_menu (void)
       unset_option (OPTREDRAWTREE);
     }
 
+    if (Context)
+      Context->menu = menu;
+
     if (Context && !attach_msg)
     {
       int check;
@@ -912,7 +915,7 @@ int mutt_index_menu (void)
 	  {
 	    if (Context->hdrs[i]->read == 0)
 	    {
-	      mutt_message _("New mail in this mailbox.");
+	      mutt_message (_("New mail in this mailbox."));
 	      if (option (OPTBEEPNEW))
 		beep ();
 	      if (NewMailCmd)
@@ -1045,7 +1048,7 @@ int mutt_index_menu (void)
 	 * force a real complete redraw.  clrtobot() doesn't seem to be able
 	 * to handle every case without this.
 	 */
-	clearok(stdscr,TRUE);
+	clearok(stdscr,true);
 	continue;
       }
 #endif
@@ -1217,7 +1220,7 @@ int mutt_index_menu (void)
 	    LIST *ref = CURHDR->env->references;
 	    if (!ref)
 	    {
-	      mutt_error _("Article has no parent reference.");
+	      mutt_error (_("Article has no parent reference."));
 	      break;
 	    }
 	    strfcpy (buf, ref->data, sizeof (buf));
@@ -1240,7 +1243,7 @@ int mutt_index_menu (void)
 	      menu->redraw = REDRAW_MOTION_RESYNCH;
 	    }
 	    else
-	      mutt_error _("Message is not visible in limited view.");
+	      mutt_error (_("Message is not visible in limited view."));
 	  }
 	  else
 	  {
@@ -1275,11 +1278,11 @@ int mutt_index_menu (void)
 
 	  if (!CURHDR->env->message_id)
 	  {
-	    mutt_error _("No Message-Id. Unable to perform operation.");
+	    mutt_error (_("No Message-Id. Unable to perform operation."));
 	    break;
 	  }
 
-	  mutt_message _("Fetching message headers...");
+	  mutt_message (_("Fetching message headers..."));
 	  if (!Context->id_hash)
 	    Context->id_hash = mutt_make_id_hash (Context);
 	  strfcpy (buf, CURHDR->env->message_id, sizeof (buf));
@@ -1354,7 +1357,7 @@ int mutt_index_menu (void)
 	  }
 	  else if (rc >= 0)
 	  {
-	    mutt_error _("No deleted messages found in the thread.");
+	    mutt_error (_("No deleted messages found in the thread."));
 	    /* Similar to OP_MAIN_ENTIRE_THREAD, keep displaying the old message, but
 	       update the index */
 	    if (menu->menu == MENU_PAGER)
@@ -1375,7 +1378,14 @@ int mutt_index_menu (void)
 	buf[0] = 0;
 	if (mutt_get_field (_("Jump to message: "), buf, sizeof (buf), 0) != 0
 	    || !buf[0])
+        {
+          if (menu->menu == MENU_PAGER)
+          {
+            op = OP_DISPLAY_MESSAGE;
+            continue;
+          }
 	  break;
+        }
 
 	if (mutt_atoi (buf, &i) < 0)
 	{
@@ -1490,8 +1500,10 @@ int mutt_index_menu (void)
 	  FREE (&Context->pattern);
 	  Context->pattern = safe_strdup (buf);
 	}
-	if ((op == OP_TOGGLE_READ && mutt_pattern_func (MUTT_LIMIT, NULL) == 0) ||
-	    mutt_pattern_func (MUTT_LIMIT, _("Limit to messages matching: ")) == 0)
+
+	if (((op == OP_LIMIT_CURRENT_THREAD) && mutt_limit_current_thread(CURHDR)) ||
+            ((op == OP_MAIN_LIMIT) && (mutt_pattern_func (MUTT_LIMIT,
+                _("Limit to messages matching: ")) == 0)))
 	{
 	  if (menu->oldcurrent >= 0)
 	  {
@@ -1548,7 +1560,7 @@ int mutt_index_menu (void)
 
       case OP_REDRAW:
 
-	clearok (stdscr, TRUE);
+	clearok (stdscr, true);
 	menu->redraw = REDRAW_FULL;
 	break;
 
@@ -1654,7 +1666,7 @@ int mutt_index_menu (void)
 #ifdef USE_IMAP
       case OP_MAIN_IMAP_FETCH:
 	if (Context && Context->magic == MUTT_IMAP)
-	  imap_check_mailbox (Context, &index_hint, 1);
+	  imap_check_mailbox (Context, 1);
         break;
 
       case OP_MAIN_IMAP_LOGOUT_ALL:
@@ -1746,12 +1758,12 @@ int mutt_index_menu (void)
 	if (tag) {
 	  for (j = 0; j < Context->vcount; j++) {
 	    if (Context->hdrs[Context->v2r[j]]->tagged) {
-	      Context->hdrs[Context->v2r[j]]->quasi_deleted = TRUE;
-	      Context->changed = TRUE;
+	      Context->hdrs[Context->v2r[j]]->quasi_deleted = true;
+	      Context->changed = true;
 	    }
 	  }
 	} else {
-	  CURHDR->quasi_deleted = TRUE;
+	  CURHDR->quasi_deleted = true;
 	  Context->changed = 1;
 	}
 	break;
@@ -1761,13 +1773,13 @@ int mutt_index_menu (void)
       {
 	int oldcount  = Context->msgcount;
 	if (Context->magic != MUTT_NOTMUCH) {
-	  mutt_message _("No virtual folder, aborting.");
+	  mutt_message (_("No virtual folder, aborting."));
 	  break;
 	}
 	CHECK_MSGCOUNT;
         CHECK_VISIBLE;
 	if (nm_read_entire_thread(Context, CURHDR) < 0) {
-	   mutt_message _("Failed to read thread, aborting.");
+	   mutt_message (_("Failed to read thread, aborting."));
 	   break;
 	}
 	if (oldcount < Context->msgcount) {
@@ -1795,7 +1807,7 @@ int mutt_index_menu (void)
       case OP_MAIN_MODIFY_LABELS_THEN_HIDE:
       {
 	if (Context->magic != MUTT_NOTMUCH) {
-	  mutt_message _("No virtual folder, aborting.");
+	  mutt_message (_("No virtual folder, aborting."));
 	  break;
 	}
 	CHECK_MSGCOUNT;
@@ -1803,7 +1815,7 @@ int mutt_index_menu (void)
 	*buf = '\0';
 	if (mutt_get_field ("Add/remove labels: ", buf, sizeof (buf), MUTT_NM_TAG) || !*buf)
 	{
-          mutt_message _("No label specified, aborting.");
+          mutt_message (_("No label specified, aborting."));
           break;
         }
 	if (tag)
@@ -1817,7 +1829,7 @@ int mutt_index_menu (void)
 	    mutt_progress_init(&progress, msgbuf, MUTT_PROGRESS_MSG,
 				   1, Context->tagged);
 	  }
-	  nm_longrun_init(Context, TRUE);
+	  nm_longrun_init(Context, true);
 	  for (px = 0, j = 0; j < Context->vcount; j++) {
 	    if (Context->hdrs[Context->v2r[j]]->tagged) {
 	      if (!Context->quiet)
@@ -1825,8 +1837,8 @@ int mutt_index_menu (void)
 	      nm_modify_message_tags(Context, Context->hdrs[Context->v2r[j]], buf);
 	      if (op == OP_MAIN_MODIFY_LABELS_THEN_HIDE)
 	      {
-		Context->hdrs[Context->v2r[j]]->quasi_deleted = TRUE;
-	        Context->changed = TRUE;
+		Context->hdrs[Context->v2r[j]]->quasi_deleted = true;
+	        Context->changed = true;
 	      }
 	    }
 	  }
@@ -1836,13 +1848,13 @@ int mutt_index_menu (void)
 	else
 	{
 	  if (nm_modify_message_tags(Context, CURHDR, buf)) {
-	    mutt_message _("Failed to modify labels, aborting.");
+	    mutt_message (_("Failed to modify labels, aborting."));
 	    break;
 	  }
 	  if (op == OP_MAIN_MODIFY_LABELS_THEN_HIDE)
 	  {
-	    CURHDR->quasi_deleted = TRUE;
-	    Context->changed = TRUE;
+	    CURHDR->quasi_deleted = true;
+	    Context->changed = true;
 	  }
 	  if (menu->menu == MENU_PAGER)
 	  {
@@ -1867,17 +1879,59 @@ int mutt_index_menu (void)
       }
 
       case OP_MAIN_VFOLDER_FROM_QUERY:
-	buf[0] = '\0';
+        buf[0] = '\0';
         if (mutt_get_field ("Query: ", buf, sizeof (buf), MUTT_NM_QUERY) != 0 || !buf[0])
         {
-          mutt_message _("No query, aborting.");
+          mutt_message (_("No query, aborting."));
           break;
         }
-	if (!nm_uri_from_query(Context, buf, sizeof (buf)))
-	  mutt_message _("Failed to create query, aborting.");
-	else
-	  main_change_folder(menu, op, buf, sizeof (buf), &oldcount, &index_hint, 0);
-	break;
+        if (!nm_uri_from_query(Context, buf, sizeof (buf)))
+          mutt_message (_("Failed to create query, aborting."));
+        else
+          main_change_folder(menu, op, buf, sizeof (buf), &oldcount, &index_hint, 0);
+        break;
+
+      case OP_MAIN_WINDOWED_VFOLDER_BACKWARD:
+        dprint(2, (debugfile, "OP_MAIN_WINDOWED_VFOLDER_BACKWARD\n"));
+        if (NotmuchQueryWindowDuration <= 0)
+        {
+          mutt_message (_("Windowed queries disabled."));
+          break;
+        }
+        if (NotmuchQueryWindowCurrentSearch == NULL)
+        {
+          mutt_message (_("No notmuch vfolder currently loaded."));
+          break;
+        }
+        nm_query_window_backward();
+        strncpy(buf, NotmuchQueryWindowCurrentSearch, sizeof(buf));
+        if (!nm_uri_from_query(Context, buf, sizeof(buf)))
+          mutt_message (_("Failed to create query, aborting."));
+        else
+          main_change_folder(menu, op, buf, sizeof (buf), &oldcount, &index_hint, 0);
+        break;
+
+      case OP_MAIN_WINDOWED_VFOLDER_FORWARD:
+        if (NotmuchQueryWindowDuration <= 0)
+        {
+          mutt_message (_("Windowed queries disabled."));
+          break;
+        }
+        if (NotmuchQueryWindowCurrentSearch == NULL)
+        {
+          mutt_message (_("No notmuch vfolder currently loaded."));
+          break;
+        }
+        nm_query_window_forward();
+        strncpy(buf, NotmuchQueryWindowCurrentSearch, sizeof(buf));
+        if (!nm_uri_from_query(Context, buf, sizeof(buf)))
+            mutt_message (_("Failed to create query, aborting."));
+        else
+        {
+          dprint(2, (debugfile, "nm: + windowed query (%s)\n", buf));
+          main_change_folder(menu, op, buf, sizeof (buf), &oldcount, &index_hint, 0);
+        }
+        break;
 
       case OP_MAIN_CHANGE_VFOLDER:
 #endif
@@ -2600,7 +2654,7 @@ int mutt_index_menu (void)
 
         if ((Sort & SORT_MASK) != SORT_THREADS)
         {
-          mutt_error _("Threading is not enabled.");
+          mutt_error (_("Threading is not enabled."));
           break;
         }
         collapse_all (menu, 1);
@@ -2793,7 +2847,7 @@ int mutt_index_menu (void)
 	  mutt_message ("%d label%s changed.", rc, rc == 1 ? "" : "s");
 	}
 	else {
-	  mutt_message _("No labels changed.");
+	  mutt_message (_("No labels changed."));
 	}
 	break;
 
@@ -2950,7 +3004,7 @@ int mutt_index_menu (void)
 	else
           /* L10N: This error is printed if <mark-message> cannot find a
              Message-ID for the currently selected message in the index. */
-	  mutt_error _("No message ID to macro.");
+	  mutt_error (_("No message ID to macro."));
 	break;
 
       case OP_RECALL_MESSAGE:
@@ -3125,7 +3179,7 @@ int mutt_index_menu (void)
 	CHECK_MSGCOUNT;
         CHECK_VISIBLE;
 	mutt_view_attachments (CURHDR);
-	if (CURHDR->attach_del)
+	if (Context && CURHDR->attach_del)
 	  Context->changed = 1;
 	menu->redraw = REDRAW_FULL;
 	break;

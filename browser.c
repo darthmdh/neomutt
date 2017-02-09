@@ -103,11 +103,9 @@ static int browser_compare_subject (const void *a, const void *b)
   struct folder_file *pb = (struct folder_file *) b;
 
   /* inbox should be sorted ahead of its siblings */
-  int same_path = mutt_same_path (pa->name, pb->name);
-  int r = (same_path && mutt_is_inbox (pa->name)) ? -1 :
-          (same_path && mutt_is_inbox (pb->name)) ?  1 :
-          mutt_strcoll  (pa->name, pb->name);
-
+  int r = mutt_inbox_cmp (pa->name, pb->name);
+  if (r == 0)
+      r = mutt_strcoll (pa->name, pb->name);
   return ((BrowserSort & SORT_REVERSE) ? -r : r);
 }
 
@@ -267,13 +265,13 @@ folder_format_str (char *dest, size_t destlen, size_t col, int cols, char op, co
     case 'D':
       if (folder->ff->local)
       {
-	int do_locales = TRUE;
+	int do_locales = true;
 
 	if (op == 'D') {
 	  t_fmt = NONULL(DateFmt);
 	  if (*t_fmt == '!') {
 	    ++t_fmt;
-	    do_locales = FALSE;
+	    do_locales = false;
 	  }
 	} else {
 	  tnow = time (NULL);
@@ -1651,7 +1649,7 @@ void _mutt_select_file (char *f, size_t flen, int flags, char ***files, int *num
 	strfcpy (buf, NONULL(Mask.pattern), sizeof (buf));
 	if (mutt_get_field (_("File Mask: "), buf, sizeof (buf), 0) == 0)
 	{
-	  regex_t *rx = (regex_t *) safe_malloc (sizeof (regex_t));
+	  regex_t *rx = safe_malloc (sizeof (regex_t));
 	  char *s = buf;
 	  int not = 0, err;
 
@@ -1968,7 +1966,7 @@ void _mutt_select_file (char *f, size_t flen, int flags, char ***files, int *num
 	{
 	  NNTP_SERVER *nserv = CurrentNewsSrv;
 	  NNTP_DATA *nntp_data;
-	  regex_t *rx = (regex_t *) safe_malloc (sizeof (regex_t));
+	  regex_t *rx = safe_malloc (sizeof (regex_t));
 	  char *s = buf;
 	  int rc, j = menu->current;
 
@@ -2002,7 +2000,7 @@ void _mutt_select_file (char *f, size_t flen, int flags, char ***files, int *num
 	  }
 	  else if (!state.entrylen)
 	  {
-	    mutt_error _("No newsgroups match the mask");
+	    mutt_error (_("No newsgroups match the mask"));
 	    break;
 	  }
 

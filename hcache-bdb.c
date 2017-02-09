@@ -21,8 +21,6 @@
 
 #include "config.h"
 
-#ifdef HAVE_BDB
-
 #include "hcache-backend.h"
 #include "mutt.h"
 #include "mx.h"
@@ -143,7 +141,7 @@ hcache_bdb_fetch(void *vctx, const char *key, size_t keylen)
 static void
 hcache_bdb_free(void *vctx, void **data)
 {
-    FREE(data);
+    FREE(data); /* __FREE_CHECKED__ */
 }
 
 static int
@@ -205,4 +203,3 @@ hcache_bdb_backend(void)
 
 HCACHE_BACKEND_OPS(bdb)
 
-#endif /* HAVE_BDB */

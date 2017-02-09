@@ -25,8 +25,6 @@
 # include "config.h"
 #endif
 
-#ifdef CRYPT_BACKEND_GPGME
-
 #include "mutt.h"
 #include "mutt_crypt.h"
 #include "mutt_menu.h"
@@ -128,6 +126,24 @@ static char *current_sender = NULL;
 /*
  * General helper functions.
  */
+
+/* accommodate for a redraw if needed */
+static void
+redraw_if_needed (gpgme_ctx_t ctx)
+{
+#if (GPGME_VERSION_NUMBER < 0x010800)
+  /* gpgme_get_ctx_flag is not available in gpgme < 1.8.0. In this case, stay
+   * on the safe side and always redraw. */
+  (void)ctx;
+  mutt_need_hard_redraw ();
+#else
+  const char *s = gpgme_get_ctx_flag (ctx, "redraw");
+  if ((s == NULL) /* flag not known */ || *s /* flag true */)
+  {
+    mutt_need_hard_redraw ();
+  }
+#endif
+}
 
 /* return true when s points to a digit or letter. */
 static int
@@ -810,7 +826,7 @@ static char *encrypt_gpgme_object (gpgme_data_t plaintext, gpgme_key_t *rset,
   else
     err = gpgme_op_encrypt (ctx, rset, GPGME_ENCRYPT_ALWAYS_TRUST,
                             plaintext, ciphertext);
-  mutt_need_hard_redraw ();
+  redraw_if_needed (ctx);
   if (err)
     {
       mutt_error (_("error encrypting data: %s\n"), gpgme_strerror (err));
@@ -924,7 +940,7 @@ static BODY *sign_message (BODY *a, int use_smime)
     }
 
   err = gpgme_op_sign (ctx, message, signature, GPGME_SIG_MODE_DETACH );
-  mutt_need_hard_redraw ();
+  redraw_if_needed (ctx);
   gpgme_data_release (message);
   if (err)
     {
@@ -1550,7 +1566,7 @@ static int verify_one (BODY *sigbdy, STATE *s,
   gpgme_data_release (message);
   gpgme_data_release (signature);
 
-  mutt_need_hard_redraw ();
+  redraw_if_needed (ctx);
   if (err)
     {
       char buf[200];
@@ -1729,7 +1745,7 @@ static BODY *decrypt_part (BODY *a, STATE *s, FILE *fpout, int is_smime,
               goto restart;
             }
         }
-      mutt_need_hard_redraw ();
+      redraw_if_needed (ctx);
       if ((s->flags & MUTT_DISPLAY))
         {
           char buf[200];
@@ -1743,7 +1759,7 @@ static BODY *decrypt_part (BODY *a, STATE *s, FILE *fpout, int is_smime,
       gpgme_release (ctx);
       return NULL;
   }
-  mutt_need_hard_redraw ();
+  redraw_if_needed (ctx);
 
   /* Read the output from GPGME, and make sure to change CRLF to LF,
      otherwise read_mime_header has a hard time parsing the message.  */
@@ -2099,13 +2115,13 @@ static int pgp_gpgme_extract_keys (gpgme_data_t keydata, FILE** fp, int dryrun)
       strftime (date, sizeof (date), "%Y-%m-%d", localtime (&tt));
 
       if (!more)
-        fprintf (*fp, "%s %5.5s %d/%8s %s %s\n", more ? "sub" : "pub",
+        fprintf (*fp, "pub %5.5s %d/%8s %s %s\n",
                  gpgme_pubkey_algo_name (subkey->pubkey_algo), subkey->length,
                  shortid, date, uid->uid);
       else
-        fprintf (*fp, "%s %5.5s %d/%8s %s\n", more ? "sub" : "pub",
+        fprintf (*fp, "sub %5.5s %d/%8s %s\n",
                  gpgme_pubkey_algo_name (subkey->pubkey_algo), subkey->length,
-                 shortid, date);      
+                 shortid, date);
       subkey = subkey->next;
       more = 1;
     }
@@ -2437,7 +2453,7 @@ int pgp_gpgme_application_handler (BODY *m, STATE *s)
                                              NULL, plaintext);
                     }
                 }
-              mutt_need_hard_redraw ();
+              redraw_if_needed (ctx);
 
               if (err)
                 {
@@ -2776,7 +2792,7 @@ static const char *crypt_entry_fmt (char *dest,
   kflags = (key->flags /*| (pkey->flags & KEYFLAG_RESTRICTIONS)
                          | uid->flags*/);
   
-  switch (ascii_tolower (op))
+  switch (tolower (op))
     {
     case '[':
       {
@@ -3580,15 +3596,9 @@ static void print_key_info (gpgme_key_t key, FILE *fp)
               fprintf (fp, _("Valid To ..: %s\n"), shortbuf);
             }
 
-	  if (subkey)
-	    s = gpgme_pubkey_algo_name (subkey->pubkey_algo);
-	  else
-            s = "?";
+          s = gpgme_pubkey_algo_name (subkey->pubkey_algo);
 
-	  if (subkey)
-	    aval = subkey->length;
-	  else
-	    aval = 0;
+          aval = subkey->length;
 
           /* L10N: DOTFILL */
           fprintf (fp, _("Key Type ..: %s, %lu bit %s\n"), "PGP", aval, s);
@@ -4721,7 +4731,7 @@ static int gpgme_send_menu (HEADER *msg, int *redraw, int is_smime)
       /* L10N: S/MIME options (opportunistic encryption is on) */
       prompt = _("S/MIME (s)ign, sign (a)s, (p)gp, (c)lear, or (o)ppenc mode off? ");
       /* L10N: S/MIME options (opportunistic encryption is on)
-         The 'f' is undocumented. Please duplicate the letter 'c' is translated into. */
+         The 'f' is undocumented. Please DO NOT translate it. */
       letters = _("sapfco");
       choices = "SapFCo";
     }
@@ -4730,7 +4740,7 @@ static int gpgme_send_menu (HEADER *msg, int *redraw, int is_smime)
       /* L10N: PGP options (opportunistic encryption is on) */
       prompt = _("PGP (s)ign, sign (a)s, s/(m)ime, (c)lear, or (o)ppenc mode off? ");
       /* L10N: PGP options (opportunistic encryption is on)
-         The 'f' is undocumented. Please duplicate the letter 'c' is translated into. */
+         The 'f' is undocumented. Please DO NOT translate it. */
       letters = _("samfco");
       choices = "SamFCo";
     }
@@ -4746,7 +4756,7 @@ static int gpgme_send_menu (HEADER *msg, int *redraw, int is_smime)
       /* L10N: S/MIME options (opportunistic encryption is off) */
       prompt = _("S/MIME (e)ncrypt, (s)ign, sign (a)s, (b)oth, (p)gp, (c)lear, or (o)ppenc mode? ");
       /* L10N: S/MIME options (opportunistic encryption is off)
-         The 'f' is undocumented. Please duplicate the letter 'c' is translated into. */
+         The 'f' is undocumented. Please DO NOT translate it. */
       letters = _("esabpfco");
       choices = "esabpfcO";
     }
@@ -4755,7 +4765,7 @@ static int gpgme_send_menu (HEADER *msg, int *redraw, int is_smime)
       /* L10N: PGP options (opportunistic encryption is off) */
       prompt = _("PGP (e)ncrypt, (s)ign, sign (a)s, (b)oth, s/(m)ime, (c)lear, or (o)ppenc mode? ");
       /* L10N: PGP options (opportunistic encryption is off)
-         The 'f' is undocumented. Please duplicate the letter 'c' is translated into. */
+         The 'f' is undocumented. Please DO NOT translate it. */
       letters = _("esabmfco");
       choices = "esabmfcO";
     }
@@ -4770,7 +4780,7 @@ static int gpgme_send_menu (HEADER *msg, int *redraw, int is_smime)
       /* L10N: S/MIME options */
       prompt = _("S/MIME (e)ncrypt, (s)ign, sign (a)s, (b)oth, (p)gp or (c)lear? ");
       /* L10N: S/MIME options
-         The 'f' is undocumented. Please duplicate the letter 'c' is translated into. */
+         The 'f' is undocumented. Please DO NOT translate it. */
       letters = _("esabpfc");
       choices = "esabpfc";
     }
@@ -4779,7 +4789,7 @@ static int gpgme_send_menu (HEADER *msg, int *redraw, int is_smime)
       /* L10N: PGP options */
       prompt = _("PGP (e)ncrypt, (s)ign, sign (a)s, (b)oth, s/(m)ime or (c)lear? ");
       /* L10N: PGP options
-         The 'f' is undocumented. Please duplicate the letter 'c' is translated into. */
+         The 'f' is undocumented. Please DO NOT translate it. */
       letters = _("esabmfc");
       choices = "esabmfc";
     }
@@ -4966,5 +4976,3 @@ void mutt_gpgme_set_sender (const char *sender)
   current_sender = safe_strdup (sender);
 }
 
-
-#endif

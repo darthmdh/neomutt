@@ -1050,6 +1050,8 @@ void mutt_view_attachments (HEADER *hdr)
   {
     if (op == OP_NULL)
       op = mutt_menuLoop (menu);
+    if (!Context)
+      return;
     switch (op)
     {
       case OP_ATTACH_VIEW_MAILCAP:
@@ -1143,7 +1145,7 @@ void mutt_view_attachments (HEADER *hdr)
 	if (Context->magic == MUTT_NNTP)
 	{
 	  mutt_flushinp ();
-	  mutt_error _("Can't delete attachment from news server.");
+	  mutt_error (_("Can't delete attachment from news server."));
 	  break;
 	}
 #endif

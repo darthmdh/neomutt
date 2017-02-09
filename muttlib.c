@@ -53,6 +53,18 @@
 #include <sys/types.h>
 #include <utime.h>
 
+/*
+ * External definitions for inline functions in mutt.h
+ */
+extern LIST *mutt_new_list();
+extern HEAP *mutt_new_heap();
+extern RX_LIST *mutt_new_rx_list();
+extern SPAM_LIST *mutt_new_spam_list();
+extern PARAMETER *mutt_new_parameter();
+extern HEADER *mutt_new_header();
+extern ENVELOPE *mutt_new_envelope();
+extern ENTER_STATE *mutt_new_enter_state();
+
 static const char *xdg_env_vars[] =
 {
   [kXDGConfigHome] = "XDG_CONFIG_HOME",
@@ -67,7 +79,7 @@ static const char *xdg_defaults[] =
 
 BODY *mutt_new_body (void)
 {
-  BODY *p = (BODY *) safe_calloc (1, sizeof (BODY));
+  BODY *p = safe_calloc (1, sizeof (BODY));
     
   p->disposition = DISPATTACH;
   p->use_disp = 1;
@@ -283,6 +295,38 @@ LIST *mutt_find_list (LIST *l, const char *data)
   return NULL;
 }
 
+void mutt_push_heap(HEAP **head, const char *data)
+{
+  HEAP *tmp;
+  tmp = safe_malloc(sizeof(HEAP));
+  tmp->data = safe_strdup(data);
+  tmp->next = *head;
+  *head = tmp;
+}
+
+int mutt_pop_heap(HEAP **head)
+{
+  HEAP *elt = *head;
+  if (!elt)
+    return 0;
+  *head = elt->next;
+  FREE(&elt->data);
+  FREE(&elt);
+  return 1;
+}
+
+const char *mutt_front_heap(HEAP *head)
+{
+  if (!head || !head->data)
+    return "";
+  return head->data;
+}
+
+HEAP *mutt_find_heap(HEAP *head, const char *data)
+{
+  return (HEAP *) mutt_find_list((LIST *) head, data);
+}
+
 int mutt_remove_from_rx_list (RX_LIST **l, const char *str)
 {
   RX_LIST *p, *last = NULL;
@@ -339,7 +383,7 @@ LIST *mutt_copy_list (LIST *p)
 
   for (; p; p = p->next)
   {
-    t = (LIST *) safe_malloc (sizeof (LIST));
+    t = safe_malloc (sizeof (LIST));
     t->data = safe_strdup (p->data);
     t->next = NULL;
     if (l)
@@ -382,7 +426,7 @@ void mutt_free_header (HEADER **h)
 }
 
 /* returns true if the header contained in "s" is in list "t" */
-int mutt_matches_ignore (const char *s, LIST *t)
+int mutt_matches_list (const char *s, LIST *t)
 {
   for (; t; t = t->next)
   {
@@ -390,6 +434,12 @@ int mutt_matches_ignore (const char *s, LIST *t)
       return 1;
   }
   return 0;
+}
+
+/* checks Ignore and UnIgnore using mutt_matches_list */
+int mutt_matches_ignore (const char *s)
+{
+    return mutt_matches_list (s, Ignore) && !mutt_matches_list (s, UnIgnore);
 }
 
 /* prepend the path part of *path to *link */
@@ -1724,7 +1774,7 @@ int mutt_save_confirm (const char *s, struct stat *st)
 #ifdef USE_NNTP
   if (magic == MUTT_NNTP)
   {
-    mutt_error _("Can't save message to news server.");
+    mutt_error (_("Can't save message to news server."));
     return 0;
   }
 #endif
@@ -2008,6 +2058,16 @@ void mutt_set_mtime (const char* from, const char* to)
   }
 }
 
+/* set atime to current time, just as read() would do on !noatime.
+ * Silently ignored if unsupported. */
+void mutt_touch_atime (int f)
+{
+#ifdef HAVE_FUTIMENS
+  struct timespec times[2]={{0,UTIME_NOW},{0,UTIME_OMIT}};
+  futimens(f, times);
+#endif
+}
+
 const char *mutt_make_version (void)
 {
   static char vstring[STRING];
@@ -2175,21 +2235,49 @@ int mutt_set_xdg_path(const XDGType type, char *buf, size_t bufsize)
   char *xdg     = (xdg_env && *xdg_env) ? safe_strdup (xdg_env) : safe_strdup (xdg_defaults[type]);
   char *x       = xdg;  /* strsep() changes xdg, so free x instead later */
   char *token   = NULL;
+  int   rc      = 0;
 
   while ((token = strsep (&xdg, ":")))
   {
-    if (snprintf (buf, bufsize, "%s/neomutt/config", token) < 0)
+    if (snprintf (buf, bufsize, "%s/%s/neomuttrc-%s", token, PACKAGE, PACKAGE_VERSION) < 0)
       continue;
     mutt_expand_path (buf, bufsize);
     if (access (buf, F_OK) == 0)
     {
-      FREE (&x);
-      return 1;
+      rc = 1;
+      break;
+    }
+
+    if (snprintf (buf, bufsize, "%s/%s/neomuttrc", token, PACKAGE) < 0)
+      continue;
+    mutt_expand_path (buf, bufsize);
+    if (access (buf, F_OK) == 0)
+    {
+      rc = 1;
+      break;
+    }
+
+    if (snprintf (buf, bufsize, "%s/%s/Muttrc-%s", token, PACKAGE, MUTT_VERSION) < 0)
+      continue;
+    mutt_expand_path (buf, bufsize);
+    if (access (buf, F_OK) == 0)
+    {
+      rc = 1;
+      break;
+    }
+
+    if (snprintf (buf, bufsize, "%s/%s/Muttrc", token, PACKAGE) < 0)
+      continue;
+    mutt_expand_path (buf, bufsize);
+    if (access (buf, F_OK) == 0)
+    {
+      rc = 1;
+      break;
     }
   }
 
   FREE (&x);
-  return 0;
+  return rc;
 }
 
 void mutt_get_parent_path (char *output, char *path, size_t olen)

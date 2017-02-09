@@ -38,7 +38,8 @@
 #define DT_MAGIC	8 /* mailbox type */
 #define DT_SYN		9 /* synonym for another variable */
 #define DT_ADDR		10 /* e-mail address */
-#define DT_HCACHE	11 /* header cache backend */
+#define DT_MBCHARTBL	11 /* multibyte char table */
+#define DT_HCACHE	12 /* header cache backend */
 
 #define DTYPE(x) ((x) & DT_MASK)
 
@@ -55,7 +56,7 @@
 #define MUTT_SET_UNSET	(1<<1)	/* default is to unset all vars */
 #define MUTT_SET_RESET	(1<<2)	/* default is to reset all vars to default */
 
-/* forced redraw/resort types */
+/* forced redraw/resort types + other flags */
 #define R_NONE		0
 #define R_INDEX		(1<<0)
 #define R_PAGER		(1<<1)
@@ -67,6 +68,11 @@
 #define R_SIDEBAR       (1<<7)  /* redraw the sidebar */
 #define R_BOTH		(R_INDEX | R_PAGER)
 #define R_RESORT_BOTH	(R_RESORT | R_RESORT_SUB)
+
+/* general flags, to be OR'd with the R_ flags above (so keep shifting..) */
+#define F_SENSITIVE	(1<<8)
+
+#define IS_SENSITIVE(x)	(((x).flags & F_SENSITIVE) == F_SENSITIVE)
 
 struct option_t
 {
@@ -117,7 +123,7 @@ struct option_t MuttVars[] = {
   ** check only happens after the \fIfirst\fP edit of the file).  When set
   ** to \fIno\fP, composition will never be aborted.
   */
-  { "alias_file",	DT_PATH, R_NONE, UL &AliasFile, UL "~/.muttrc" },
+  { "alias_file",	DT_PATH, R_NONE, UL &AliasFiles, UL "~/.muttrc" },
   /*
   ** .pp
   ** The default file in which to save aliases created by the
@@ -797,6 +803,12 @@ struct option_t MuttVars[] = {
   ** .pp
   ** where \fIstring\fP is the expansion of \fC$$editor\fP described above.
   */
+  { "empty_subject",    DT_STR, R_NONE, UL &EmptySubject, UL "Re: your mail" },
+  /*
+  ** .pp
+  ** This variable specifies the subject to be used when replying to an email
+  ** with an empty subject.  It defaults to "Re: your mail".
+  */
   { "encode_from",	DT_BOOL, R_NONE, OPTENCODEFROM, 0 },
   /*
   ** .pp
@@ -1005,7 +1017,7 @@ struct option_t MuttVars[] = {
   ** .pp
   ** This setting defaults to the contents of the environment variable \fC$$$EMAIL\fP.
   */
-  { "from_chars",		DT_STR,	 R_BOTH, UL &Fromchars, UL 0 },
+  { "from_chars",		DT_MBCHARTBL,	 R_BOTH, UL &Fromchars, 0 },
   /*
   ** .pp
   ** Controls the character used to prefix the %F and %L fields in the
@@ -1337,14 +1349,14 @@ struct option_t MuttVars[] = {
   ** only subscribed folders or all folders.  This can be toggled in the
   ** IMAP browser with the \fC<toggle-subscribed>\fP function.
   */
-  { "imap_login",	DT_STR,  R_NONE, UL &ImapLogin, UL 0 },
+  { "imap_login",	DT_STR,  R_NONE|F_SENSITIVE, UL &ImapLogin, UL 0 },
   /*
   ** .pp
   ** Your login name on the IMAP server.
   ** .pp
   ** This variable defaults to the value of $$imap_user.
   */
-  { "imap_pass", 	DT_STR,  R_NONE, UL &ImapPass, UL 0 },
+  { "imap_pass", 	DT_STR,  R_NONE|F_SENSITIVE, UL &ImapPass, UL 0 },
   /*
   ** .pp
   ** Specifies the password for your IMAP account.  If \fIunset\fP, Mutt will
@@ -1392,7 +1404,7 @@ struct option_t MuttVars[] = {
   ** server which are out of the users' hands, you may wish to suppress
   ** them at some point.
   */
-  { "imap_user",	DT_STR,  R_NONE, UL &ImapUser, UL 0 },
+  { "imap_user",	DT_STR,  R_NONE|F_SENSITIVE, UL &ImapUser, UL 0 },
   /*
   ** .pp
   ** The name of the user whose mail you intend to access on the IMAP
@@ -1974,14 +1986,14 @@ struct option_t MuttVars[] = {
   ** must be loaded when newsgroup is added to list (first time list
   ** loading or new newsgroup adding).
   */
-  { "nntp_user",	DT_STR, R_NONE, UL &NntpUser, UL "" },
+  { "nntp_user",	DT_STR, R_NONE|F_SENSITIVE, UL &NntpUser, UL "" },
   /*
   ** .pp
   ** Your login name on the NNTP server.  If \fIunset\fP and NNTP server requires
   ** authentication, Mutt will prompt you for your account name when you
   ** connect to news server.
   */
-  { "nntp_pass",	DT_STR, R_NONE, UL &NntpPass, UL "" },
+  { "nntp_pass",	DT_STR, R_NONE|F_SENSITIVE, UL &NntpPass, UL "" },
   /*
   ** .pp
   ** Your password for NNTP account.
@@ -2047,6 +2059,30 @@ struct option_t MuttVars[] = {
   /*
    ** .pp
    ** This variable specifies the default tags applied to messages stored to the mutt record.
+   ** When set to 0 this variable disable the window feature.
+   */
+  { "nm_query_window_duration", DT_NUM, R_NONE, UL &NotmuchQueryWindowDuration, 0 },
+  /*
+   ** .pp
+   ** This variable sets the time base of a windowed notmuch query.
+   ** Accepted values are 'minute', 'hour', 'day', 'week', 'month', 'year'
+   */
+  { "nm_query_window_timebase", DT_STR, R_NONE, UL &NotmuchQueryWindowTimebase, UL "week" },
+  /*
+   ** .pp
+   ** This variable sets the time duration of a windowed notmuch query.
+   ** Accepted values all non negative integers. A value of 0 disables the feature.
+   */
+  { "nm_query_window_current_search", DT_STR, R_NONE, UL &NotmuchQueryWindowCurrentSearch, UL "" },
+  /*
+   ** .pp
+   ** This variable sets the time duration of a windowed notmuch query.
+   ** Accepted values all non negative integers. A value of 0 disables the feature.
+   */
+  { "nm_query_window_current_position", DT_NUM, R_NONE, UL &NotmuchQueryWindowCurrentPosition, 0 },
+  /*
+   ** .pp
+   ** This variable contains the currently setup notmuch search for window based vfolder.
    */
 #endif
   { "pager",		DT_PATH, R_NONE, UL &Pager, UL "builtin" },
@@ -2542,7 +2578,7 @@ struct option_t MuttVars[] = {
   ** for retrieving only unread messages from the POP server when using
   ** the \fC$<fetch-mail>\fP function.
   */
-  { "pop_pass",		DT_STR,	 R_NONE, UL &PopPass, UL "" },
+  { "pop_pass",		DT_STR,	 R_NONE|F_SENSITIVE, UL &PopPass, UL "" },
   /*
   ** .pp
   ** Specifies the password for your POP account.  If \fIunset\fP, Mutt will
@@ -2558,7 +2594,7 @@ struct option_t MuttVars[] = {
   ** Controls whether or not Mutt will try to reconnect to the POP server if
   ** the connection is lost.
   */
-  { "pop_user",		DT_STR,	 R_NONE, UL &PopUser, 0 },
+  { "pop_user",		DT_STR,	 R_NONE|F_SENSITIVE, UL &PopUser, 0 },
   /*
   ** .pp
   ** Your login name on the POP server.
@@ -3525,25 +3561,25 @@ struct option_t MuttVars[] = {
   ** (S/MIME only)
   */
 #ifdef USE_SMTP
-# ifdef USE_SASL
   { "smtp_authenticators", DT_STR, R_NONE, UL &SmtpAuthenticators, UL 0 },
   /*
   ** .pp
   ** This is a colon-delimited list of authentication methods mutt may
   ** attempt to use to log in to an SMTP server, in the order mutt should
-  ** try them.  Authentication methods are any SASL mechanism, e.g.
+  ** try them.  Authentication methods are any SASL mechanism, e.g. ``plain'',
   ** ``digest-md5'', ``gssapi'' or ``cram-md5''.
   ** This option is case-insensitive. If it is ``unset''
   ** (the default) mutt will try all available methods, in order from
-  ** most-secure to least-secure.
+  ** most-secure to least-secure. Support for the ``plain'' mechanism is
+  ** bundled; other mechanisms are provided by an external SASL library (look
+  ** for +USE_SASL in the output of mutt -v).
   ** .pp
   ** Example:
   ** .ts
   ** set smtp_authenticators="digest-md5:cram-md5"
   ** .te
   */
-# endif /* USE_SASL */
-  { "smtp_pass", 	DT_STR,  R_NONE, UL &SmtpPass, UL 0 },
+  { "smtp_pass", 	DT_STR,  R_NONE|F_SENSITIVE, UL &SmtpPass, UL 0 },
   /*
   ** .pp
   ** Specifies the password for your SMTP account.  If \fIunset\fP, Mutt will
@@ -3554,7 +3590,7 @@ struct option_t MuttVars[] = {
   ** fairly secure machine, because the superuser can read your muttrc even
   ** if you are the only one who can read the file.
   */
-  { "smtp_url",		DT_STR, R_NONE, UL &SmtpUrl, UL 0 },
+  { "smtp_url",		DT_STR, R_NONE|F_SENSITIVE, UL &SmtpUrl, UL 0 },
   /*
   ** .pp
   ** Defines the SMTP smarthost where sent messages should relayed for
@@ -3793,19 +3829,22 @@ struct option_t MuttVars[] = {
   ** required.)
   */
 #endif /* defined(USE_SSL) */
-  { "status_chars",	DT_STR,	 R_BOTH, UL &StChars, UL "-*%A" },
+  { "status_chars",	DT_MBCHARTBL, R_BOTH, UL &StChars, UL "-*%A" },
   /*
   ** .pp
-  ** Controls the characters used by the ``%r'' indicator in
-  ** $$status_format. The first character is used when the mailbox is
-  ** unchanged. The second is used when the mailbox has been changed, and
-  ** it needs to be resynchronized. The third is used if the mailbox is in
-  ** read-only mode, or if the mailbox will not be written when exiting
-  ** that mailbox (You can toggle whether to write changes to a mailbox
-  ** with the \fC<toggle-write>\fP operation, bound by default to ``%''). The fourth
-  ** is used to indicate that the current folder has been opened in attach-
-  ** message mode (Certain operations like composing a new mail, replying,
-  ** forwarding, etc. are not permitted in this mode).
+  ** Controls the characters used by the ``%r'' indicator in $$status_format.
+  ** .dl
+  ** .dt \fBCharacter\fP .dd \fBDefault\fP .dd \fBDescription\fP
+  ** .dt 1 .dd - .dd Mailbox is unchanged
+  ** .dt 2 .dd * .dd Mailbox has been changed and needs to be resynchronized
+  ** .dt 3 .dd % .dd Mailbox is read-only, or will not be written when exiting.
+  **                 (You can toggle whether to write changes to a mailbox
+  **                 with the \fC<toggle-write>\fP operation, bound by default
+  **                 to ``%'')
+  ** .dt 4 .dd A .dd Folder opened in attach-message mode.
+  **                 (Certain operations like composing a new mail, replying,
+  **                 forwarding, etc. are not permitted in this mode)
+  ** .de
   */
   { "status_format",	DT_STR,	 R_BOTH, UL &Status, UL "-%r-NeoMutt: %f [Msgs:%?M?%M/?%m%?n? New:%n?%?o? Old:%o?%?d? Del:%d?%?F? Flag:%F?%?t? Tag:%t?%?p? Post:%p?%?b? Inc:%b?%?l? %l?]---(%s/%S)-%>-(%P)---" },
   /*
@@ -3977,7 +4016,7 @@ struct option_t MuttVars[] = {
   ** this variable is not set, the environment variable \fC$$$TMPDIR\fP is
   ** used.  If \fC$$$TMPDIR\fP is not set then ``\fC/tmp\fP'' is used.
   */
-  { "to_chars",		DT_STR,	 R_BOTH, UL &Tochars, UL " +TCFL" },
+  { "to_chars",		DT_MBCHARTBL, R_BOTH, UL &Tochars, UL " +TCFL" },
   /*
   ** .pp
   ** Controls the character used to indicate mail addressed to you.
@@ -3991,6 +4030,25 @@ struct option_t MuttVars[] = {
   ** .dt 6 .dd L .dd Indicates the mail was sent to a mailing-list you subscribe to.
   ** .de
   */
+  { "flag_chars",	DT_MBCHARTBL,	 R_BOTH, UL &Flagchars, UL "*!DdrONon- " },
+  /*
+   ** .pp
+   ** Controls the characters used in several flags.
+   ** .dl
+   ** .dt \fBCharacter\fP .dd \fBDefault\fP .dd \fBDescription\fP
+   ** .dt 1 .dd * .dd The mail is tagged.
+   ** .dt 2 .dd ! .dd The mail is flagged as important.
+   ** .dt 3 .dd D .dd The mail is marked for deletion.
+   ** .dt 4 .dd d .dd The mail has attachments marked for deletion.
+   ** .dt 5 .dd r .dd The mail has been replied to.
+   ** .dt 6 .dd O .dd The mail is Old (Unread but seen).
+   ** .dt 7 .dd N .dd The mail is New (Unread but not seen).
+   ** .dt 8 .dd o .dd The mail thread is Old (Unread but seen).
+   ** .dt 9 .dd n .dd The mail thread is New (Unread but not seen).
+   ** .dt 10 .dd - .dd The mail is read - %S expando.
+   ** .dt 11 .dd <space> .dd The mail is read - %Z expando.
+   ** .de
+   */
   { "trash",		DT_PATH, R_NONE, UL &TrashPath, 0 },
   /*
   ** .pp
@@ -4046,6 +4104,14 @@ struct option_t MuttVars[] = {
   ** .pp
   ** When \fIset\fP, Mutt will jump to the next unread message, if any,
   ** when the current thread is \fIun\fPcollapsed.
+  */
+  { "uncollapse_new", 	DT_BOOL, R_NONE, OPTUNCOLLAPSENEW, 1 },
+  /*
+  ** .pp
+  ** When \fIset\fP, Mutt will automatically uncollapse any collapsed thread
+  ** that receives a new message. When \fIunset\fP, collapsed threads will
+  ** remain collapsed. the presence of the new message will still affect
+  ** index sorting, though.
   */
   { "use_8bitmime",	DT_BOOL, R_NONE, OPTUSE8BITMIME, 0 },
   /*
@@ -4334,6 +4400,7 @@ static int parse_ignore (BUFFER *, BUFFER *, unsigned long, BUFFER *);
 static int parse_unignore (BUFFER *, BUFFER *, unsigned long, BUFFER *);
 static int parse_source (BUFFER *, BUFFER *, unsigned long, BUFFER *);
 static int parse_set (BUFFER *, BUFFER *, unsigned long, BUFFER *);
+static int parse_setenv (BUFFER *, BUFFER *, unsigned long, BUFFER *);
 static int parse_my_hdr (BUFFER *, BUFFER *, unsigned long, BUFFER *);
 static int parse_unmy_hdr (BUFFER *, BUFFER *, unsigned long, BUFFER *);
 static int parse_subscribe (BUFFER *, BUFFER *, unsigned long, BUFFER *);
@@ -4401,6 +4468,7 @@ const struct command_t Commands[] = {
   { "unmailboxes",	mutt_parse_mailboxes,	MUTT_UNMAILBOXES },
 #ifdef USE_NOTMUCH
   { "virtual-mailboxes",mutt_parse_virtual_mailboxes, 0 },
+  { "unvirtual-mailboxes",mutt_parse_unvirtual_mailboxes, 0 },
   { "tag-transforms",	parse_tag_transforms,	0 },
   { "tag-formats",	parse_tag_formats,	0 },
 #endif
@@ -4422,6 +4490,7 @@ const struct command_t Commands[] = {
   { "send-hook",	mutt_parse_hook,	MUTT_SENDHOOK },
   { "send2-hook",	mutt_parse_hook,	MUTT_SEND2HOOK },
   { "set",		parse_set,		0 },
+  { "setenv",		parse_setenv,		0 },
 #ifdef USE_SIDEBAR
   { "sidebar_whitelist",parse_list,		UL &SidebarWhitelist },
   { "unsidebar_whitelist",parse_unlist,		UL &SidebarWhitelist },
@@ -4445,6 +4514,7 @@ const struct command_t Commands[] = {
   { "unmy_hdr",		parse_unmy_hdr,		0 },
   { "unscore",		mutt_parse_unscore,	0 },
   { "unset",		parse_set,		MUTT_SET_UNSET },
+  { "unsetenv",		parse_setenv,		MUTT_SET_UNSET },
   { "unsubscribe",	parse_unsubscribe,	0 },
   { NULL,		NULL,			0 }
 };

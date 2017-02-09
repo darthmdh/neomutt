@@ -31,7 +31,7 @@ WHERE char *MuttDotlock;
 WHERE ADDRESS *EnvFrom;
 WHERE ADDRESS *From;
 
-WHERE char *AliasFile;
+WHERE LIST *AliasFiles;
 WHERE char *AliasFmt;
 WHERE char *AssumedCharset;
 WHERE char *AttachSep;
@@ -50,11 +50,12 @@ WHERE char *DisplayFilter;
 WHERE char *DsnNotify;
 WHERE char *DsnReturn;
 WHERE char *Editor;
+WHERE char *EmptySubject;
 WHERE char *EscChar;
 WHERE char *FolderFormat;
 WHERE char *ForwFmt;
 WHERE char *Fqdn;
-WHERE char *Fromchars;
+WHERE mbchar_table *Fromchars;
 WHERE char *HdrFmt;
 WHERE char *HistFile;
 WHERE char *Homedir;
@@ -98,7 +99,7 @@ WHERE char *Mixmaster;
 WHERE char *MixEntryFormat;
 #endif
 
-WHERE char *Muttrc INITVAL (NULL);
+WHERE LIST *Muttrc INITVAL (0);
 #ifdef USE_NNTP
 WHERE char *GroupFormat;
 WHERE char *Inews;
@@ -159,10 +160,11 @@ WHERE short SslDHPrimeBits;
 WHERE char *SslCACertFile INITVAL (NULL);
 #endif
 #endif
-WHERE char *StChars;
+WHERE mbchar_table *StChars;
 WHERE char *Status;
 WHERE char *Tempdir;
-WHERE char *Tochars;
+WHERE mbchar_table *Tochars;
+WHERE mbchar_table *Flagchars;
 WHERE char *TrashPath;
 WHERE char *TSStatusFormat;
 WHERE char *TSIconFormat;
@@ -320,6 +322,10 @@ WHERE char *VirtFolderFormat;
 WHERE int NotmuchDBLimit;
 WHERE char *NotmuchQueryType;
 WHERE char *NotmuchRecordTags;
+WHERE int NotmuchQueryWindowDuration;
+WHERE char *NotmuchQueryWindowTimebase;
+WHERE int NotmuchQueryWindowCurrentPosition;
+WHERE char *NotmuchQueryWindowCurrentSearch;
 #endif
 
 

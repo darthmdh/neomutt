@@ -21,8 +21,6 @@
 
 #include "config.h"
 
-#ifdef HAVE_QDBM
-
 #include "hcache-backend.h"
 #include "mutt.h"
 #include <depot.h>
@@ -53,7 +51,7 @@ hcache_qdbm_fetch(void *ctx, const char *key, size_t keylen)
 static void
 hcache_qdbm_free(void *ctx, void **data)
 {
-    FREE(data);
+    FREE(data); /* __FREE_CHECKED__ */
 }
 
 static int
@@ -94,4 +92,3 @@ hcache_qdbm_backend(void)
 
 HCACHE_BACKEND_OPS(qdbm)
 
-#endif /* HAVE_LMDB */

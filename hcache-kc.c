@@ -21,8 +21,6 @@
 
 #include "config.h"
 
-#ifdef HAVE_KC
-
 #include "hcache-backend.h"
 #include "mutt.h"
 #include <kclangc.h>
@@ -73,7 +71,7 @@ hcache_kyotocabinet_fetch(void *ctx, const char *key, size_t keylen)
 static void
 hcache_kyotocabinet_free(void *vctx, void **data)
 {
-    FREE(data);
+    FREE(data); /* __FREE_CHECKED__ */
 }
 
 static int
@@ -126,4 +124,3 @@ hcache_kyotocabinet_backend(void)
 
 HCACHE_BACKEND_OPS(kyotocabinet)
 
-#endif /* HAVE_KC */

@@ -451,8 +451,14 @@ static void cmd_handle_fatal (IMAP_DATA* idata)
     idata->state = IMAP_DISCONNECTED;
   }
 
-  if (idata->state < IMAP_SELECTED)
-    imap_close_connection (idata);
+  imap_close_connection (idata);
+  if (!idata->recovering)
+  {
+    idata->recovering = 1;
+    if (imap_conn_find (&idata->conn->account, 0))
+      mutt_clear_error ();
+    idata->recovering = 0;
+  }
 }
 
 /* cmd_handle_untagged: fallback parser for otherwise unhandled messages. */
@@ -782,7 +788,7 @@ static void cmd_parse_lsub (IMAP_DATA* idata, char* s)
   url.path[strlen(url.path) - 1] = '\0';
   if (!mutt_strcmp (url.user, ImapUser))
     url.user = NULL;
-  url_ciss_tostring (&url, buf + 11, sizeof (buf) - 10, 0);
+  url_ciss_tostring (&url, buf + 11, sizeof (buf) - 11, 0);
   safe_strcat (buf, sizeof (buf), "\"");
   mutt_buffer_init (&token);
   mutt_buffer_init (&err);
