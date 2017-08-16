@@ -1,128 +1,151 @@
-/*
+/**
+ * @file
+ * Prepare and send an email
+ *
+ * @authors
  * Copyright (C) 1996-2002,2004,2010,2012-2013 Michael R. Elkins <me@mutt.org>
- * 
- *     This program is free software; you can redistribute it and/or modify
- *     it under the terms of the GNU General Public License as published by
- *     the Free Software Foundation; either version 2 of the License, or
- *     (at your option) any later version.
- * 
- *     This program is distributed in the hope that it will be useful,
- *     but WITHOUT ANY WARRANTY; without even the implied warranty of
- *     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *     GNU General Public License for more details.
- * 
- *     You should have received a copy of the GNU General Public License
- *     along with this program; if not, write to the Free Software
- *     Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
- */ 
+ *
+ * @copyright
+ * This program is free software: you can redistribute it and/or modify it under
+ * the terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 2 of the License, or (at your option) any later
+ * version.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+ * FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+ * details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
-#if HAVE_CONFIG_H
-# include "config.h"
-#endif
-
-#include "mutt.h"
-#include "mutt_curses.h"
-#include "rfc2047.h"
-#include "keymap.h"
-#include "mime.h"
-#include "mailbox.h"
-#include "copy.h"
-#include "mutt_crypt.h"
-#include "mutt_idna.h"
-#include "url.h"
-#include "rfc3676.h"
-
+#include "config.h"
 #include <ctype.h>
-#include <stdlib.h>
-#include <locale.h>
-#include <unistd.h>
-#include <string.h>
 #include <errno.h>
+#include <limits.h>
+#include <locale.h>
+#include <regex.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <string.h>
 #include <sys/stat.h>
-#include <sys/wait.h>
-#include <dirent.h>
 #include <time.h>
-#include <sys/types.h>
-#include <utime.h>
-
+#include <unistd.h>
+#include "mutt.h"
+#include "address.h"
+#include "alias.h"
+#include "body.h"
+#include "context.h"
+#include "copy.h"
+#include "envelope.h"
+#include "filter.h"
+#include "globals.h"
+#include "header.h"
+#include "lib/lib.h"
+#include "list.h"
+#include "mailbox.h"
+#include "mime.h"
+#include "mutt_curses.h"
+#include "mutt_idna.h"
+#include "mutt_regex.h"
+#include "ncrypt/ncrypt.h"
+#include "options.h"
+#include "parameter.h"
+#include "pattern.h"
+#include "protos.h"
+#include "rfc2047.h"
+#include "rfc3676.h"
+#include "rfc822.h"
+#include "sort.h"
+#include "url.h"
 #ifdef USE_NNTP
-#include "nntp.h"
 #include "mx.h"
+#include "nntp.h"
 #endif
-
 #ifdef MIXMASTER
 #include "remailer.h"
 #endif
-
 #ifdef USE_NOTMUCH
 #include "mutt_notmuch.h"
 #endif
 
-static void append_signature (FILE *f)
+static void append_signature(FILE *f)
 {
-  FILE *tmpfp;
+  FILE *tmpfp = NULL;
   pid_t thepid;
 
-  if (Signature && (tmpfp = mutt_open_read (Signature, &thepid)))
+  if (Signature && (tmpfp = mutt_open_read(Signature, &thepid)))
   {
-    if (option (OPTSIGDASHES))
-      fputs ("\n-- \n", f);
-    mutt_copy_stream (tmpfp, f);
-    safe_fclose (&tmpfp);
+    if (option(OPT_SIG_DASHES))
+      fputs("\n-- \n", f);
+    mutt_copy_stream(tmpfp, f);
+    safe_fclose(&tmpfp);
     if (thepid != -1)
-      mutt_wait_filter (thepid);
+      mutt_wait_filter(thepid);
   }
 }
 
-/* compare two e-mail addresses and return 1 if they are equivalent */
-static int mutt_addrcmp (ADDRESS *a, ADDRESS *b)
+/**
+ * addrcmp - compare two e-mail addresses
+ * @param a Address 1
+ * @param b Address 2
+ * @retval true if they are equivalent
+ */
+static bool addrcmp(struct Address *a, struct Address *b)
 {
   if (!a->mailbox || !b->mailbox)
-    return 0;
-  if (ascii_strcasecmp (a->mailbox, b->mailbox))
-    return 0;
-  return 1;
+    return false;
+  if (mutt_strcasecmp(a->mailbox, b->mailbox) != 0)
+    return false;
+  return true;
 }
 
-/* search an e-mail address in a list */
-static int mutt_addrsrc (ADDRESS *a, ADDRESS *lst)
+/**
+ * addrsrc - search an e-mail address in a list
+ */
+static int addrsrc(struct Address *a, struct Address *lst)
 {
   for (; lst; lst = lst->next)
   {
-    if (mutt_addrcmp (a, lst))
-      return (1);
+    if (addrcmp(a, lst))
+      return 1;
   }
-  return (0);
+  return 0;
 }
 
-/* removes addresses from "b" which are contained in "a" */
-ADDRESS *mutt_remove_xrefs (ADDRESS *a, ADDRESS *b)
+/**
+ * mutt_remove_xrefs - Remove cross-references
+ *
+ * Remove addresses from "b" which are contained in "a"
+ */
+struct Address *mutt_remove_xrefs(struct Address *a, struct Address *b)
 {
-  ADDRESS *top, *p, *prev = NULL;
+  struct Address *top = NULL, *p = NULL, *prev = NULL;
 
   top = b;
   while (b)
   {
     for (p = a; p; p = p->next)
     {
-      if (mutt_addrcmp (p, b))
-	break;
+      if (addrcmp(p, b))
+        break;
     }
     if (p)
     {
       if (prev)
       {
-	prev->next = b->next;
-	b->next = NULL;
-	rfc822_free_address (&b);
-	b = prev;
+        prev->next = b->next;
+        b->next = NULL;
+        rfc822_free_address(&b);
+        b = prev;
       }
       else
       {
-	top = top->next;
-	b->next = NULL;
-	rfc822_free_address (&b);
-	b = top;
+        top = top->next;
+        b->next = NULL;
+        rfc822_free_address(&b);
+        b = top;
       }
     }
     else
@@ -134,16 +157,19 @@ ADDRESS *mutt_remove_xrefs (ADDRESS *a, ADDRESS *b)
   return top;
 }
 
-/* remove any address which matches the current user.  if `leave_only' is
- * nonzero, don't remove the user's address if it is the only one in the list
+/**
+ * remove_user - Remove any address which matches the current user
+ * @param a          List of addresses
+ * @param leave_only If set, don't remove the user's address if it it the only
+ *                   one in the list
  */
-static ADDRESS *remove_user (ADDRESS *a, int leave_only)
+static struct Address *remove_user(struct Address *a, int leave_only)
 {
-  ADDRESS *top = NULL, *last = NULL;
+  struct Address *top = NULL, *last = NULL;
 
   while (a)
   {
-    if (!mutt_addr_is_user (a))
+    if (!mutt_addr_is_user(a))
     {
       if (top)
       {
@@ -157,319 +183,318 @@ static ADDRESS *remove_user (ADDRESS *a, int leave_only)
     }
     else
     {
-      ADDRESS *tmp = a;
-      
+      struct Address *tmp = a;
+
       a = a->next;
       if (!leave_only || a || last)
       {
-	tmp->next = NULL;
-	rfc822_free_address (&tmp);
+        tmp->next = NULL;
+        rfc822_free_address(&tmp);
       }
       else
-	last = top = tmp;
+        last = top = tmp;
     }
   }
   return top;
 }
 
-static ADDRESS *find_mailing_lists (ADDRESS *t, ADDRESS *c)
+static struct Address *find_mailing_lists(struct Address *t, struct Address *c)
 {
-  ADDRESS *top = NULL, *ptr = NULL;
+  struct Address *top = NULL, *ptr = NULL;
 
   for (; t || c; t = c, c = NULL)
   {
     for (; t; t = t->next)
     {
-      if (mutt_is_mail_list (t) && !t->group)
+      if (mutt_is_mail_list(t) && !t->group)
       {
-	if (top)
-	{
-	  ptr->next = rfc822_cpy_adr_real (t);
-	  ptr = ptr->next;
-	}
-	else
-	  ptr = top = rfc822_cpy_adr_real (t);
+        if (top)
+        {
+          ptr->next = rfc822_cpy_adr_real(t);
+          ptr = ptr->next;
+        }
+        else
+          ptr = top = rfc822_cpy_adr_real(t);
       }
     }
   }
   return top;
 }
 
-static int edit_address (ADDRESS **a, /* const */ char *field)
+static int edit_address(struct Address **a, /* const */ char *field)
 {
   char buf[HUGE_STRING];
   char *err = NULL;
   int idna_ok = 0;
-  
+
   do
   {
     buf[0] = 0;
-    mutt_addrlist_to_local (*a);
-    rfc822_write_address (buf, sizeof (buf), *a, 0);
-    if (mutt_get_field (field, buf, sizeof (buf), MUTT_ALIAS) != 0)
-      return (-1);
-    rfc822_free_address (a);
-    *a = mutt_expand_aliases (mutt_parse_adrlist (NULL, buf));
-    if ((idna_ok = mutt_addrlist_to_intl (*a, &err)) != 0)
+    mutt_addrlist_to_local(*a);
+    rfc822_write_address(buf, sizeof(buf), *a, 0);
+    if (mutt_get_field(field, buf, sizeof(buf), MUTT_ALIAS) != 0)
+      return -1;
+    rfc822_free_address(a);
+    *a = mutt_expand_aliases(mutt_parse_adrlist(NULL, buf));
+    if ((idna_ok = mutt_addrlist_to_intl(*a, &err)) != 0)
     {
-      mutt_error (_("Error: '%s' is a bad IDN."), err);
-      mutt_refresh ();
-      mutt_sleep (2);
-      FREE (&err);
+      mutt_error(_("Error: '%s' is a bad IDN."), err);
+      mutt_refresh();
+      mutt_sleep(2);
+      FREE(&err);
     }
-  } 
-  while (idna_ok != 0);
+  } while (idna_ok != 0);
   return 0;
 }
 
-static int edit_envelope (ENVELOPE *en, int flags)
+static int edit_envelope(struct Envelope *en, int flags)
 {
   char buf[HUGE_STRING];
-  LIST *uh = UserHeader;
 
 #ifdef USE_NNTP
-  if (option (OPTNEWSSEND))
+  if (option(OPT_NEWS_SEND))
   {
     if (en->newsgroups)
-      strfcpy (buf, en->newsgroups, sizeof (buf));
+      strfcpy(buf, en->newsgroups, sizeof(buf));
     else
       buf[0] = 0;
-    if (mutt_get_field ("Newsgroups: ", buf, sizeof (buf), 0) != 0)
-      return (-1);
-    FREE (&en->newsgroups);
-    en->newsgroups = safe_strdup (buf);
+    if (mutt_get_field("Newsgroups: ", buf, sizeof(buf), 0) != 0)
+      return -1;
+    FREE(&en->newsgroups);
+    en->newsgroups = safe_strdup(buf);
 
     if (en->followup_to)
-      strfcpy (buf, en->followup_to, sizeof (buf));
+      strfcpy(buf, en->followup_to, sizeof(buf));
     else
       buf[0] = 0;
-    if (option (OPTASKFOLLOWUP) && mutt_get_field ("Followup-To: ", buf, sizeof (buf), 0) != 0)
-      return (-1);
-    FREE (&en->followup_to);
-    en->followup_to = safe_strdup (buf);
+    if (option(OPT_ASK_FOLLOWUP) && mutt_get_field("Followup-To: ", buf, sizeof(buf), 0) != 0)
+      return -1;
+    FREE(&en->followup_to);
+    en->followup_to = safe_strdup(buf);
 
     if (en->x_comment_to)
-      strfcpy (buf, en->x_comment_to, sizeof (buf));
+      strfcpy(buf, en->x_comment_to, sizeof(buf));
     else
       buf[0] = 0;
-    if (option (OPTXCOMMENTTO) && option (OPTASKXCOMMENTTO) && mutt_get_field ("X-Comment-To: ", buf, sizeof (buf), 0) != 0)
-      return (-1);
-    FREE (&en->x_comment_to);
-    en->x_comment_to = safe_strdup (buf);
+    if (option(OPT_XCOMMENT_TO) && option(OPT_ASK_XCOMMENTTO) &&
+        mutt_get_field("X-Comment-To: ", buf, sizeof(buf), 0) != 0)
+      return -1;
+    FREE(&en->x_comment_to);
+    en->x_comment_to = safe_strdup(buf);
   }
   else
 #endif
   {
-    if (edit_address (&en->to, "To: ") == -1 || en->to == NULL)
-      return (-1);
-    if (option (OPTASKCC) && edit_address (&en->cc, "Cc: ") == -1)
-      return (-1);
-    if (option (OPTASKBCC) && edit_address (&en->bcc, "Bcc: ") == -1)
-      return (-1);
-    if (option (OPTREPLYWITHXORIG) &&
-	(flags & (SENDREPLY|SENDLISTREPLY|SENDGROUPREPLY)) &&
-	(edit_address (&en->from, "From: ") == -1))
-      return (-1);
+    if (edit_address(&en->to, _("To: ")) == -1 || en->to == NULL)
+      return -1;
+    if (option(OPT_ASK_CC) && edit_address(&en->cc, _("Cc: ")) == -1)
+      return -1;
+    if (option(OPT_ASK_BCC) && edit_address(&en->bcc, _("Bcc: ")) == -1)
+      return -1;
+    if (option(OPT_REPLY_WITH_XORIG) && (flags & (SENDREPLY | SENDLISTREPLY | SENDGROUPREPLY)) &&
+        (edit_address(&en->from, "From: ") == -1))
+      return -1;
   }
 
   if (en->subject)
   {
-    if (option (OPTFASTREPLY))
-      return (0);
+    if (option(OPT_FAST_REPLY))
+      return 0;
     else
-      strfcpy (buf, en->subject, sizeof (buf));
+      strfcpy(buf, en->subject, sizeof(buf));
   }
   else
   {
-    const char *p;
+    const char *p = NULL;
 
     buf[0] = 0;
-    for (; uh; uh = uh->next)
+    struct ListNode *uh;
+    STAILQ_FOREACH(uh, &UserHeader, entries)
     {
-      if (ascii_strncasecmp ("subject:", uh->data, 8) == 0)
+      if (mutt_strncasecmp("subject:", uh->data, 8) == 0)
       {
-	p = skip_email_wsp(uh->data + 8);
-	strncpy (buf, p, sizeof (buf));
+        p = skip_email_wsp(uh->data + 8);
+        strfcpy(buf, p, sizeof(buf));
       }
     }
   }
-  
-  if (mutt_get_field ("Subject: ", buf, sizeof (buf), 0) != 0 ||
-      (!buf[0] && query_quadoption (OPT_SUBJECT, _("No subject, abort?")) != MUTT_NO))
+
+  if (mutt_get_field(_("Subject: "), buf, sizeof(buf), 0) != 0 ||
+      (!buf[0] && query_quadoption(OPT_SUBJECT, _("No subject, abort?")) != MUTT_NO))
   {
-    mutt_message _("No subject, aborting.");
-    return (-1);
+    mutt_message(_("No subject, aborting."));
+    return -1;
   }
-  mutt_str_replace (&en->subject, buf);
+  mutt_str_replace(&en->subject, buf);
 
   return 0;
 }
 
 #ifdef USE_NNTP
-char *nntp_get_header (const char *s)
+static char *nntp_get_header(const char *s)
 {
-  SKIPWS (s);
-  return safe_strdup (s);
+  SKIPWS(s);
+  return safe_strdup(s);
 }
 #endif
 
-static void process_user_recips (ENVELOPE *env)
+static void process_user_recips(struct Envelope *env)
 {
-  LIST *uh = UserHeader;
-
-  for (; uh; uh = uh->next)
+  struct ListNode *uh;
+  STAILQ_FOREACH(uh, &UserHeader, entries)
   {
-    if (ascii_strncasecmp ("to:", uh->data, 3) == 0)
-      env->to = rfc822_parse_adrlist (env->to, uh->data + 3);
-    else if (ascii_strncasecmp ("cc:", uh->data, 3) == 0)
-      env->cc = rfc822_parse_adrlist (env->cc, uh->data + 3);
-    else if (ascii_strncasecmp ("bcc:", uh->data, 4) == 0)
-      env->bcc = rfc822_parse_adrlist (env->bcc, uh->data + 4);
+    if (mutt_strncasecmp("to:", uh->data, 3) == 0)
+      env->to = rfc822_parse_adrlist(env->to, uh->data + 3);
+    else if (mutt_strncasecmp("cc:", uh->data, 3) == 0)
+      env->cc = rfc822_parse_adrlist(env->cc, uh->data + 3);
+    else if (mutt_strncasecmp("bcc:", uh->data, 4) == 0)
+      env->bcc = rfc822_parse_adrlist(env->bcc, uh->data + 4);
 #ifdef USE_NNTP
-    else if (ascii_strncasecmp ("newsgroups:", uh->data, 11) == 0)
-      env->newsgroups = nntp_get_header (uh->data + 11);
-    else if (ascii_strncasecmp ("followup-to:", uh->data, 12) == 0)
-      env->followup_to = nntp_get_header (uh->data + 12);
-    else if (ascii_strncasecmp ("x-comment-to:", uh->data, 13) == 0)
-      env->x_comment_to = nntp_get_header (uh->data + 13);
+    else if (mutt_strncasecmp("newsgroups:", uh->data, 11) == 0)
+      env->newsgroups = nntp_get_header(uh->data + 11);
+    else if (mutt_strncasecmp("followup-to:", uh->data, 12) == 0)
+      env->followup_to = nntp_get_header(uh->data + 12);
+    else if (mutt_strncasecmp("x-comment-to:", uh->data, 13) == 0)
+      env->x_comment_to = nntp_get_header(uh->data + 13);
 #endif
   }
 }
 
-static void process_user_header (ENVELOPE *env)
+static void process_user_header(struct Envelope *env)
 {
-  LIST *uh = UserHeader;
-  LIST *last = env->userhdrs;
-
-  if (last)
-    while (last->next)
-      last = last->next;
-
-  for (; uh; uh = uh->next)
+  struct ListNode *uh;
+  STAILQ_FOREACH(uh, &UserHeader, entries)
   {
-    if (ascii_strncasecmp ("from:", uh->data, 5) == 0)
+    if (mutt_strncasecmp("from:", uh->data, 5) == 0)
     {
       /* User has specified a default From: address.  Remove default address */
-      rfc822_free_address (&env->from);
-      env->from = rfc822_parse_adrlist (env->from, uh->data + 5);
+      rfc822_free_address(&env->from);
+      env->from = rfc822_parse_adrlist(env->from, uh->data + 5);
     }
-    else if (ascii_strncasecmp ("reply-to:", uh->data, 9) == 0)
+    else if (mutt_strncasecmp("reply-to:", uh->data, 9) == 0)
     {
-      rfc822_free_address (&env->reply_to);
-      env->reply_to = rfc822_parse_adrlist (env->reply_to, uh->data + 9);
+      rfc822_free_address(&env->reply_to);
+      env->reply_to = rfc822_parse_adrlist(env->reply_to, uh->data + 9);
     }
-    else if (ascii_strncasecmp ("message-id:", uh->data, 11) == 0)
+    else if (mutt_strncasecmp("message-id:", uh->data, 11) == 0)
     {
-      char *tmp = mutt_extract_message_id (uh->data + 11, NULL);
-      if (rfc822_valid_msgid (tmp) >= 0)
+      char *tmp = mutt_extract_message_id(uh->data + 11, NULL);
+      if (rfc822_valid_msgid(tmp))
       {
-	FREE(&env->message_id);
-	env->message_id = tmp;
-      } else
-	FREE(&tmp);
-    }
-    else if (ascii_strncasecmp ("to:", uh->data, 3) != 0 &&
-	     ascii_strncasecmp ("cc:", uh->data, 3) != 0 &&
-	     ascii_strncasecmp ("bcc:", uh->data, 4) != 0 &&
-#ifdef USE_NNTP
-	     ascii_strncasecmp ("newsgroups:", uh->data, 11) != 0 &&
-	     ascii_strncasecmp ("followup-to:", uh->data, 12) != 0 &&
-	     ascii_strncasecmp ("x-comment-to:", uh->data, 13) != 0 &&
-#endif
-	     ascii_strncasecmp ("supersedes:", uh->data, 11) != 0 &&
-	     ascii_strncasecmp ("subject:", uh->data, 8) != 0 &&
-	     ascii_strncasecmp ("return-path:", uh->data, 12) != 0)
-    {
-      if (last)
-      {
-	last->next = mutt_new_list ();
-	last = last->next;
+        FREE(&env->message_id);
+        env->message_id = tmp;
       }
       else
-	last = env->userhdrs = mutt_new_list ();
-      last->data = safe_strdup (uh->data);
+        FREE(&tmp);
+    }
+    else if ((mutt_strncasecmp("to:", uh->data, 3) != 0) &&
+             (mutt_strncasecmp("cc:", uh->data, 3) != 0) &&
+             (mutt_strncasecmp("bcc:", uh->data, 4) != 0) &&
+#ifdef USE_NNTP
+             (mutt_strncasecmp("newsgroups:", uh->data, 11) != 0) &&
+             (mutt_strncasecmp("followup-to:", uh->data, 12) != 0) &&
+             (mutt_strncasecmp("x-comment-to:", uh->data, 13) != 0) &&
+#endif
+             (mutt_strncasecmp("supersedes:", uh->data, 11) != 0) &&
+             (mutt_strncasecmp("subject:", uh->data, 8) != 0) &&
+             (mutt_strncasecmp("return-path:", uh->data, 12) != 0))
+    {
+      mutt_list_insert_tail(&env->userhdrs, safe_strdup(uh->data));
     }
   }
 }
 
-void mutt_forward_intro (FILE *fp, HEADER *cur)
+void mutt_forward_intro(struct Context *ctx, struct Header *cur, FILE *fp)
 {
-  char buffer[STRING];
-  
-  fputs ("----- Forwarded message from ", fp);
-  buffer[0] = 0;
-  rfc822_write_address (buffer, sizeof (buffer), cur->env->from, 1);
-  fputs (buffer, fp);
-  fputs (" -----\n\n", fp);
+  char buffer[LONG_STRING];
+
+  if (ForwardAttrIntro)
+  {
+    setlocale(LC_TIME, NONULL(AttributionLocale));
+    mutt_make_string(buffer, sizeof(buffer), ForwardAttrIntro, ctx, cur);
+    setlocale(LC_TIME, "");
+    fputs(buffer, fp);
+    fputs("\n\n", fp);
+  }
 }
 
-void mutt_forward_trailer (FILE *fp)
+void mutt_forward_trailer(struct Context *ctx, struct Header *cur, FILE *fp)
 {
-  fputs ("\n----- End forwarded message -----\n", fp);
+  char buffer[LONG_STRING];
+
+  if (ForwardAttrTrailer)
+  {
+    setlocale(LC_TIME, NONULL(AttributionLocale));
+    mutt_make_string(buffer, sizeof(buffer), ForwardAttrTrailer, ctx, cur);
+    setlocale(LC_TIME, "");
+    fputc('\n', fp);
+    fputs(buffer, fp);
+    fputc('\n', fp);
+  }
 }
 
-
-static int include_forward (CONTEXT *ctx, HEADER *cur, FILE *out)
+static int include_forward(struct Context *ctx, struct Header *cur, FILE *out)
 {
   int chflags = CH_DECODE, cmflags = 0;
-  
-  mutt_parse_mime_message (ctx, cur);
-  mutt_message_hook (ctx, cur, MUTT_MESSAGEHOOK);
 
-  if (WithCrypto && (cur->security & ENCRYPT) && option (OPTFORWDECODE))
+  mutt_parse_mime_message(ctx, cur);
+  mutt_message_hook(ctx, cur, MUTT_MESSAGEHOOK);
+
+  if (WithCrypto && (cur->security & ENCRYPT) && option(OPT_FORW_DECODE))
   {
     /* make sure we have the user's passphrase before proceeding... */
-    crypt_valid_passphrase (cur->security);
+    if (!crypt_valid_passphrase(cur->security))
+      return -1;
   }
 
-  mutt_forward_intro (out, cur);
+  mutt_forward_intro(ctx, cur, out);
 
-  if (option (OPTFORWDECODE))
+  if (option(OPT_FORW_DECODE))
   {
     cmflags |= MUTT_CM_DECODE | MUTT_CM_CHARCONV;
-    if (option (OPTWEED))
+    if (option(OPT_WEED))
     {
       chflags |= CH_WEED | CH_REORDER;
       cmflags |= MUTT_CM_WEED;
     }
   }
-  if (option (OPTFORWQUOTE))
+  if (option(OPT_FORW_QUOTE))
     cmflags |= MUTT_CM_PREFIX;
 
   /* wrapping headers for forwarding is considered a display
    * rather than send action */
   chflags |= CH_DISPLAY;
 
-  mutt_copy_message (out, ctx, cur, cmflags, chflags);
-  mutt_forward_trailer (out);
+  mutt_copy_message(out, ctx, cur, cmflags, chflags);
+  mutt_forward_trailer(ctx, cur, out);
   return 0;
 }
 
-void mutt_make_attribution (CONTEXT *ctx, HEADER *cur, FILE *out)
+void mutt_make_attribution(struct Context *ctx, struct Header *cur, FILE *out)
 {
   char buffer[LONG_STRING];
   if (Attribution)
   {
-    setlocale (LC_TIME, NONULL (AttributionLocale));
-    mutt_make_string (buffer, sizeof (buffer), Attribution, ctx, cur);
-    setlocale (LC_TIME, "");
-    fputs (buffer, out);
-    fputc ('\n', out);
+    setlocale(LC_TIME, NONULL(AttributionLocale));
+    mutt_make_string(buffer, sizeof(buffer), Attribution, ctx, cur);
+    setlocale(LC_TIME, "");
+    fputs(buffer, out);
+    fputc('\n', out);
   }
 }
 
-void mutt_make_post_indent (CONTEXT *ctx, HEADER *cur, FILE *out)
+void mutt_make_post_indent(struct Context *ctx, struct Header *cur, FILE *out)
 {
   char buffer[STRING];
   if (PostIndentString)
   {
-    mutt_make_string (buffer, sizeof (buffer), PostIndentString, ctx, cur);
-    fputs (buffer, out);
-    fputc ('\n', out);
+    mutt_make_string(buffer, sizeof(buffer), PostIndentString, ctx, cur);
+    fputs(buffer, out);
+    fputc('\n', out);
   }
 }
 
-static int include_reply (CONTEXT *ctx, HEADER *cur, FILE *out)
+static int include_reply(struct Context *ctx, struct Header *cur, FILE *out)
 {
   int cmflags = MUTT_CM_PREFIX | MUTT_CM_DECODE | MUTT_CM_CHARCONV | MUTT_CM_REPLYING;
   int chflags = CH_DECODE;
@@ -477,36 +502,37 @@ static int include_reply (CONTEXT *ctx, HEADER *cur, FILE *out)
   if (WithCrypto && (cur->security & ENCRYPT))
   {
     /* make sure we have the user's passphrase before proceeding... */
-    crypt_valid_passphrase (cur->security);
+    if (!crypt_valid_passphrase(cur->security))
+      return -1;
   }
 
-  mutt_parse_mime_message (ctx, cur);
-  mutt_message_hook (ctx, cur, MUTT_MESSAGEHOOK);
-  
-  mutt_make_attribution (ctx, cur, out);
-  
-  if (!option (OPTHEADER))
+  mutt_parse_mime_message(ctx, cur);
+  mutt_message_hook(ctx, cur, MUTT_MESSAGEHOOK);
+
+  mutt_make_attribution(ctx, cur, out);
+
+  if (!option(OPT_HEADER))
     cmflags |= MUTT_CM_NOHEADER;
-  if (option (OPTWEED))
+  if (option(OPT_WEED))
   {
     chflags |= CH_WEED | CH_REORDER;
     cmflags |= MUTT_CM_WEED;
   }
 
-  mutt_copy_message (out, ctx, cur, cmflags, chflags);
+  mutt_copy_message(out, ctx, cur, cmflags, chflags);
 
-  mutt_make_post_indent (ctx, cur, out);
-  
+  mutt_make_post_indent(ctx, cur, out);
+
   return 0;
 }
 
-static int default_to (ADDRESS **to, ENVELOPE *env, int flags, int hmfupto)
+static int default_to(struct Address **to, struct Envelope *env, int flags, int hmfupto)
 {
   char prompt[STRING];
 
-  if (flags && env->mail_followup_to && hmfupto == MUTT_YES) 
+  if (flags && env->mail_followup_to && hmfupto == MUTT_YES)
   {
-    rfc822_append (to, env->mail_followup_to, 1);
+    rfc822_append(to, env->mail_followup_to, 1);
     return 0;
   }
 
@@ -516,32 +542,30 @@ static int default_to (ADDRESS **to, ENVELOPE *env, int flags, int hmfupto)
   if (flags & SENDLISTREPLY)
     return 0;
 
-  if (!option(OPTREPLYSELF) && mutt_addr_is_user (env->from))
+  if (!option(OPT_REPLY_SELF) && mutt_addr_is_user(env->from))
   {
     /* mail is from the user, assume replying to recipients */
-    rfc822_append (to, env->to, 1);
+    rfc822_append(to, env->to, 1);
   }
   else if (env->reply_to)
   {
-    if ((mutt_addrcmp (env->from, env->reply_to) && !env->reply_to->next) || 
-	(option (OPTIGNORELISTREPLYTO) &&
-	mutt_is_mail_list (env->reply_to) &&
-	(mutt_addrsrc (env->reply_to, env->to) ||
-	mutt_addrsrc (env->reply_to, env->cc))))
+    if ((addrcmp(env->from, env->reply_to) && !env->reply_to->next &&
+         !env->reply_to->personal) ||
+        (option(OPT_IGNORE_LIST_REPLY_TO) && mutt_is_mail_list(env->reply_to) &&
+         (addrsrc(env->reply_to, env->to) || addrsrc(env->reply_to, env->cc))))
     {
       /* If the Reply-To: address is a mailing list, assume that it was
        * put there by the mailing list, and use the From: address
-       * 
+       *
        * We also take the from header if our correspondent has a reply-to
        * header which is identical to the electronic mail address given
-       * in his From header.
-       * 
+       * in his From header, and the reply-to has no display-name.
+       *
        */
-      rfc822_append (to, env->from, 0);
+      rfc822_append(to, env->from, 0);
     }
-    else if (!(mutt_addrcmp (env->from, env->reply_to) && 
-	       !env->reply_to->next) &&
-	     quadoption (OPT_REPLYTO) != MUTT_YES)
+    else if (!(addrcmp(env->from, env->reply_to) && !env->reply_to->next) &&
+             quadoption(OPT_REPLY_TO) != MUTT_YES)
     {
       /* There are quite a few mailing lists which set the Reply-To:
        * header field to the list address, which makes it quite impossible
@@ -551,109 +575,108 @@ static int default_to (ADDRESS **to, ENVELOPE *env, int flags, int hmfupto)
       /* L10N:
          Asks whether the user respects the reply-to header.
          If she says no, mutt will reply to the from header's address instead. */
-      snprintf (prompt, sizeof (prompt), _("Reply to %s%s?"),
-		env->reply_to->mailbox, 
-		env->reply_to->next?",...":"");
-      switch (query_quadoption (OPT_REPLYTO, prompt))
+      snprintf(prompt, sizeof(prompt), _("Reply to %s%s?"),
+               env->reply_to->mailbox, env->reply_to->next ? ",..." : "");
+      switch (query_quadoption(OPT_REPLY_TO, prompt))
       {
-      case MUTT_YES:
-	rfc822_append (to, env->reply_to, 0);
-	break;
+        case MUTT_YES:
+          rfc822_append(to, env->reply_to, 0);
+          break;
 
-      case MUTT_NO:
-	rfc822_append (to, env->from, 0);
-	break;
+        case MUTT_NO:
+          rfc822_append(to, env->from, 0);
+          break;
 
-      default:
-	return (-1); /* abort */
+        default:
+          return -1; /* abort */
       }
     }
     else
-      rfc822_append (to, env->reply_to, 0);
+      rfc822_append(to, env->reply_to, 0);
   }
   else
-    rfc822_append (to, env->from, 0);
+    rfc822_append(to, env->from, 0);
 
-  return (0);
+  return 0;
 }
 
-int mutt_fetch_recips (ENVELOPE *out, ENVELOPE *in, int flags)
+int mutt_fetch_recips(struct Envelope *out, struct Envelope *in, int flags)
 {
   char prompt[STRING];
-  ADDRESS *tmp;
+  struct Address *tmp = NULL;
   int hmfupto = -1;
 
-  if ((flags & (SENDLISTREPLY|SENDGROUPREPLY)) && in->mail_followup_to)
+  if ((flags & (SENDLISTREPLY | SENDGROUPREPLY)) && in->mail_followup_to)
   {
-    snprintf (prompt, sizeof (prompt), _("Follow-up to %s%s?"),
-	      in->mail_followup_to->mailbox,
-	      in->mail_followup_to->next ? ",..." : "");
+    snprintf(prompt, sizeof(prompt), _("Follow-up to %s%s?"),
+             in->mail_followup_to->mailbox,
+             in->mail_followup_to->next ? ",..." : "");
 
-    if ((hmfupto = query_quadoption (OPT_MFUPTO, prompt)) == MUTT_ABORT)
+    if ((hmfupto = query_quadoption(OPT_MF_UP_TO, prompt)) == MUTT_ABORT)
       return -1;
   }
 
   if (flags & SENDLISTREPLY)
   {
-    tmp = find_mailing_lists (in->to, in->cc);
-    rfc822_append (&out->to, tmp, 0);
-    rfc822_free_address (&tmp);
+    tmp = find_mailing_lists(in->to, in->cc);
+    rfc822_append(&out->to, tmp, 0);
+    rfc822_free_address(&tmp);
 
     if (in->mail_followup_to && hmfupto == MUTT_YES &&
-        default_to (&out->cc, in, flags & SENDLISTREPLY, hmfupto) == MUTT_ABORT)
-      return (-1); /* abort */
+        default_to(&out->cc, in, flags & SENDLISTREPLY, hmfupto) == MUTT_ABORT)
+      return -1; /* abort */
   }
   else
   {
-    if (default_to (&out->to, in, flags & SENDGROUPREPLY, hmfupto) == MUTT_ABORT)
-      return (-1); /* abort */
+    if (default_to(&out->to, in, flags & SENDGROUPREPLY, hmfupto) == MUTT_ABORT)
+      return -1; /* abort */
 
     if ((flags & SENDGROUPREPLY) && (!in->mail_followup_to || hmfupto != MUTT_YES))
     {
       /* if(!mutt_addr_is_user(in->to)) */
-      rfc822_append (&out->cc, in->to, 1);
-      rfc822_append (&out->cc, in->cc, 1);
+      rfc822_append(&out->cc, in->to, 1);
+      rfc822_append(&out->cc, in->cc, 1);
     }
   }
   return 0;
 }
 
-LIST *mutt_make_references(ENVELOPE *e)
+static void add_references(struct ListHead *head, struct Envelope *e)
 {
-  LIST *t = NULL, *l = NULL;
+  struct ListHead *src;
+  struct ListNode *np;
 
-  if (e->references)
-    l = mutt_copy_list (e->references);
-  else
-    l = mutt_copy_list (e->in_reply_to);
-  
-  if (e->message_id)
+  src = !STAILQ_EMPTY(&e->references) ? &e->references : &e->in_reply_to;
+  STAILQ_FOREACH(np, src, entries)
   {
-    t = mutt_new_list();
-    t->data = safe_strdup(e->message_id);
-    t->next = l;
-    l = t;
+    mutt_list_insert_tail(head, safe_strdup(np->data));
   }
-  
-  return l;
 }
 
-void mutt_fix_reply_recipients (ENVELOPE *env)
+static void add_message_id(struct ListHead *head, struct Envelope *e)
 {
-  if (! option (OPTMETOO))
+  if (e->message_id)
+  {
+    mutt_list_insert_head(head, safe_strdup(e->message_id));
+  }
+}
+
+void mutt_fix_reply_recipients(struct Envelope *env)
+{
+  if (!option(OPT_ME_TOO))
   {
     /* the order is important here.  do the CC: first so that if the
      * the user is the only recipient, it ends up on the TO: field
      */
-    env->cc = remove_user (env->cc, (env->to == NULL));
-    env->to = remove_user (env->to, (env->cc == NULL));
+    env->cc = remove_user(env->cc, (env->to == NULL));
+    env->to = remove_user(env->to, (env->cc == NULL));
   }
-  
+
   /* the CC field can get cluttered, especially with lists */
-  env->to = mutt_remove_duplicates (env->to);
-  env->cc = mutt_remove_duplicates (env->cc);
-  env->cc = mutt_remove_xrefs (env->to, env->cc);
-  
+  env->to = mutt_remove_duplicates(env->to);
+  env->cc = mutt_remove_duplicates(env->cc);
+  env->cc = mutt_remove_xrefs(env->to, env->cc);
+
   if (env->cc && !env->to)
   {
     env->to = env->cc;
@@ -661,105 +684,92 @@ void mutt_fix_reply_recipients (ENVELOPE *env)
   }
 }
 
-void mutt_make_forward_subject (ENVELOPE *env, CONTEXT *ctx, HEADER *cur)
+void mutt_make_forward_subject(struct Envelope *env, struct Context *ctx, struct Header *cur)
 {
+  if (!env)
+    return;
+
   char buffer[STRING];
 
   /* set the default subject for the message. */
-  mutt_make_string (buffer, sizeof (buffer), NONULL(ForwFmt), ctx, cur);
-  mutt_str_replace (&env->subject, buffer);
+  mutt_make_string(buffer, sizeof(buffer), NONULL(ForwFmt), ctx, cur);
+  mutt_str_replace(&env->subject, buffer);
 }
 
-void mutt_make_misc_reply_headers (ENVELOPE *env, CONTEXT *ctx,
-				    HEADER *cur, ENVELOPE *curenv)
+void mutt_make_misc_reply_headers(struct Envelope *env, struct Context *ctx,
+                                  struct Header *cur, struct Envelope *curenv)
 {
+  if (!env || !curenv)
+    return;
+
   /* This takes precedence over a subject that might have
    * been taken from a List-Post header.  Is that correct?
    */
   if (curenv->real_subj)
   {
-    FREE (&env->subject);
-    env->subject = safe_malloc (mutt_strlen (curenv->real_subj) + 5);
-    sprintf (env->subject, "Re: %s", curenv->real_subj);	/* __SPRINTF_CHECKED__ */
+    FREE(&env->subject);
+    env->subject = safe_malloc(mutt_strlen(curenv->real_subj) + 5);
+    sprintf(env->subject, "Re: %s", curenv->real_subj);
   }
   else if (!env->subject)
-    env->subject = safe_strdup (EmptySubject);
+    env->subject = safe_strdup(EmptySubject);
 }
 
-void mutt_add_to_reference_headers (ENVELOPE *env, ENVELOPE *curenv, LIST ***pp, LIST ***qq)
+void mutt_add_to_reference_headers(struct Envelope *env, struct Envelope *curenv)
 {
-  LIST **p = NULL, **q = NULL;
+  add_references(&env->references, curenv);
+  add_message_id(&env->references, curenv);
+  add_message_id(&env->in_reply_to, curenv);
 
-  if (pp) p = *pp;
-  if (qq) q = *qq;
-  
-  if (!p) p = &env->references;
-  if (!q) q = &env->in_reply_to;
-  
-  while (*p) p = &(*p)->next;
-  while (*q) q = &(*q)->next;
-  
-  *p = mutt_make_references (curenv);
-  
-  if (curenv->message_id)
-  {
-    *q = mutt_new_list();
-    (*q)->data = safe_strdup (curenv->message_id);
-  }
-  
-  if (pp) *pp = p;
-  if (qq) *qq = q;
-  
 #ifdef USE_NNTP
-  if (option (OPTNEWSSEND) && option (OPTXCOMMENTTO) && curenv->from)
-    env->x_comment_to = safe_strdup (mutt_get_name (curenv->from));
+  if (option(OPT_NEWS_SEND) && option(OPT_XCOMMENT_TO) && curenv->from)
+    env->x_comment_to = safe_strdup(mutt_get_name(curenv->from));
 #endif
 }
 
-static void 
-mutt_make_reference_headers (ENVELOPE *curenv, ENVELOPE *env, CONTEXT *ctx)
+static void make_reference_headers(struct Envelope *curenv,
+                                   struct Envelope *env, struct Context *ctx)
 {
-  env->references = NULL;
-  env->in_reply_to = NULL;
-  
+  if (!env || !ctx)
+    return;
+
   if (!curenv)
   {
-    HEADER *h;
-    LIST **p = NULL, **q = NULL;
-    int i;
-    
-    for(i = 0; i < ctx->vcount; i++)
+    struct Header *h = NULL;
+    for (int i = 0; i < ctx->vcount; i++)
     {
       h = ctx->hdrs[ctx->v2r[i]];
       if (h->tagged)
-	mutt_add_to_reference_headers (env, h->env, &p, &q);
+        mutt_add_to_reference_headers(env, h->env);
     }
   }
   else
-    mutt_add_to_reference_headers (env, curenv, NULL, NULL);
+    mutt_add_to_reference_headers(env, curenv);
 
   /* if there's more than entry in In-Reply-To (i.e. message has
      multiple parents), don't generate a References: header as it's
      discouraged by RfC2822, sect. 3.6.4 */
-  if (ctx->tagged > 0 && env->in_reply_to && env->in_reply_to->next)
-    mutt_free_list (&env->references);
+  if (ctx->tagged > 0 && !STAILQ_EMPTY(&env->in_reply_to) &&
+      STAILQ_NEXT(STAILQ_FIRST(&env->in_reply_to), entries))
+    mutt_list_free(&env->references);
 }
 
-static int
-envelope_defaults (ENVELOPE *env, CONTEXT *ctx, HEADER *cur, int flags)
+static int envelope_defaults(struct Envelope *env, struct Context *ctx,
+                             struct Header *cur, int flags)
 {
-  ENVELOPE *curenv = NULL;
-  int i = 0, tag = 0;
+  struct Envelope *curenv = NULL;
+  int i = 0;
+  bool tag = false;
 
   if (!cur)
   {
-    tag = 1;
+    tag = true;
     for (i = 0; i < ctx->vcount; i++)
       if (ctx->hdrs[ctx->v2r[i]]->tagged)
       {
-	cur = ctx->hdrs[ctx->v2r[i]];
-	curenv = cur->env;
-	break;
+        cur = ctx->hdrs[ctx->v2r[i]];
+        curenv = cur->env;
+        break;
       }
 
     if (!cur)
@@ -767,12 +777,15 @@ envelope_defaults (ENVELOPE *env, CONTEXT *ctx, HEADER *cur, int flags)
       /* This could happen if the user tagged some messages and then did
        * a limit such that none of the tagged message are visible.
        */
-      mutt_error _("No tagged messages are visible!");
-      return (-1);
+      mutt_error(_("No tagged messages are visible!"));
+      return -1;
     }
   }
   else
     curenv = cur->env;
+
+  if (!curenv)
+    return -1;
 
   if (flags & SENDREPLY)
   {
@@ -780,422 +793,433 @@ envelope_defaults (ENVELOPE *env, CONTEXT *ctx, HEADER *cur, int flags)
     if ((flags & SENDNEWS))
     {
       /* in case followup set Newsgroups: with Followup-To: if it present */
-      if (!env->newsgroups && curenv &&
-	  mutt_strcasecmp (curenv->followup_to, "poster"))
-	env->newsgroups = safe_strdup (curenv->followup_to);
+      if (!env->newsgroups && (mutt_strcasecmp(curenv->followup_to, "poster") != 0))
+        env->newsgroups = safe_strdup(curenv->followup_to);
     }
     else
 #endif
-    if (tag)
+        if (tag)
     {
-      HEADER *h;
+      struct Header *h = NULL;
 
       for (i = 0; i < ctx->vcount; i++)
       {
-	h = ctx->hdrs[ctx->v2r[i]];
-	if (h->tagged && mutt_fetch_recips (env, h->env, flags) == -1)
-	  return -1;
+        h = ctx->hdrs[ctx->v2r[i]];
+        if (h->tagged && mutt_fetch_recips(env, h->env, flags) == -1)
+          return -1;
       }
     }
-    else if (mutt_fetch_recips (env, curenv, flags) == -1)
+    else if (mutt_fetch_recips(env, curenv, flags) == -1)
       return -1;
 
     if ((flags & SENDLISTREPLY) && !env->to)
     {
-      mutt_error _("No mailing lists found!");
-      return (-1);
+      mutt_error(_("No mailing lists found!"));
+      return -1;
     }
 
-    mutt_make_misc_reply_headers (env, ctx, cur, curenv);
-    mutt_make_reference_headers (tag ? NULL : curenv, env, ctx);
+    mutt_make_misc_reply_headers(env, ctx, cur, curenv);
+    make_reference_headers(tag ? NULL : curenv, env, ctx);
   }
   else if (flags & SENDFORWARD)
   {
-    mutt_make_forward_subject (env, ctx, cur);
-    if (option (OPTFORWREF))
-      mutt_make_reference_headers (tag ? NULL : curenv, env, ctx);
+    mutt_make_forward_subject(env, ctx, cur);
+    if (option(OPT_FORW_REF))
+      make_reference_headers(tag ? NULL : curenv, env, ctx);
   }
 
-  return (0);
+  return 0;
 }
 
-static int
-generate_body (FILE *tempfp,	/* stream for outgoing message */
-	       HEADER *msg,	/* header for outgoing message */
-	       int flags,	/* compose mode */
-	       CONTEXT *ctx,	/* current mailbox */
-	       HEADER *cur)	/* current message */
+/**
+ * generate_body - Create a new email body
+ * @param tempfp stream for outgoing message
+ * @param msg    header for outgoing message
+ * @param flags  compose mode
+ * @param ctx    current mailbox
+ * @param cur    current message
+ * @retval 0 on success
+ * @retval -1 on error
+ */
+static int generate_body(FILE *tempfp, struct Header *msg, int flags,
+                         struct Context *ctx, struct Header *cur)
 {
   int i;
-  HEADER *h;
-  BODY *tmp;
+  struct Header *h = NULL;
+  struct Body *tmp = NULL;
 
   if (flags & SENDREPLY)
   {
-    if ((i = query_quadoption (OPT_INCLUDE, _("Include message in reply?"))) == MUTT_ABORT)
-      return (-1);
+    if ((i = query_quadoption(OPT_INCLUDE, _("Include message in reply?"))) == MUTT_ABORT)
+      return -1;
 
     if (i == MUTT_YES)
     {
-      mutt_message _("Including quoted message...");
+      mutt_message(_("Including quoted message..."));
       if (!cur)
       {
-	for (i = 0; i < ctx->vcount; i++)
-	{
-	  h = ctx->hdrs[ctx->v2r[i]];
-	  if (h->tagged)
-	  {
-	    if (include_reply (ctx, h, tempfp) == -1)
-	    {
-	      mutt_error _("Could not include all requested messages!");
-	      return (-1);
-	    }
-	    fputc ('\n', tempfp);
-	  }
-	}
+        for (i = 0; i < ctx->vcount; i++)
+        {
+          h = ctx->hdrs[ctx->v2r[i]];
+          if (h->tagged)
+          {
+            if (include_reply(ctx, h, tempfp) == -1)
+            {
+              mutt_error(_("Could not include all requested messages!"));
+              return -1;
+            }
+            fputc('\n', tempfp);
+          }
+        }
       }
       else
-	include_reply (ctx, cur, tempfp);
-
+        include_reply(ctx, cur, tempfp);
     }
   }
   else if (flags & SENDFORWARD)
   {
-    if ((i = query_quadoption (OPT_MIMEFWD, _("Forward as attachment?"))) == MUTT_YES)
+    if ((i = query_quadoption(OPT_MIME_FWD, _("Forward as attachment?"))) == MUTT_YES)
     {
-      BODY *last = msg->content;
+      struct Body *last = msg->content;
 
-      mutt_message _("Preparing forwarded message...");
-      
+      mutt_message(_("Preparing forwarded message..."));
+
       while (last && last->next)
-	last = last->next;
+        last = last->next;
 
       if (cur)
       {
-	tmp = mutt_make_message_attach (ctx, cur, 0);
-	if (last)
-	  last->next = tmp;
-	else
-	  msg->content = tmp;
+        tmp = mutt_make_message_attach(ctx, cur, 0);
+        if (last)
+          last->next = tmp;
+        else
+          msg->content = tmp;
       }
       else
       {
-	for (i = 0; i < ctx->vcount; i++)
-	{
-	  if (ctx->hdrs[ctx->v2r[i]]->tagged)
-	  {
-	    tmp = mutt_make_message_attach (ctx, ctx->hdrs[ctx->v2r[i]], 0);
-	    if (last)
-	    {
-	      last->next = tmp;
-	      last = tmp;
-	    }
-	    else
-	      last = msg->content = tmp;
-	  }
-	}
+        for (i = 0; i < ctx->vcount; i++)
+        {
+          if (ctx->hdrs[ctx->v2r[i]]->tagged)
+          {
+            tmp = mutt_make_message_attach(ctx, ctx->hdrs[ctx->v2r[i]], 0);
+            if (last)
+            {
+              last->next = tmp;
+              last = tmp;
+            }
+            else
+              last = msg->content = tmp;
+          }
+        }
       }
     }
     else if (i != -1)
     {
       if (cur)
-	include_forward (ctx, cur, tempfp);
+        include_forward(ctx, cur, tempfp);
       else
-	for (i=0; i < ctx->vcount; i++)
-	  if (ctx->hdrs[ctx->v2r[i]]->tagged)
-	    include_forward (ctx, ctx->hdrs[ctx->v2r[i]], tempfp);
+        for (i = 0; i < ctx->vcount; i++)
+          if (ctx->hdrs[ctx->v2r[i]]->tagged)
+            include_forward(ctx, ctx->hdrs[ctx->v2r[i]], tempfp);
     }
     else if (i == -1)
       return -1;
   }
   /* if (WithCrypto && (flags & SENDKEY)) */
-  else if ((WithCrypto & APPLICATION_PGP) && (flags & SENDKEY)) 
+  else if ((WithCrypto & APPLICATION_PGP) && (flags & SENDKEY))
   {
-    BODY *tmp;
+    struct Body *b = NULL;
 
-    if ((WithCrypto & APPLICATION_PGP)
-        && (tmp = crypt_pgp_make_key_attachment (NULL)) == NULL)
+    if ((WithCrypto & APPLICATION_PGP) && (b = crypt_pgp_make_key_attachment(NULL)) == NULL)
       return -1;
 
-    tmp->next = msg->content;
-    msg->content = tmp;
+    b->next = msg->content;
+    msg->content = b;
   }
 
-  mutt_clear_error ();
+  mutt_clear_error();
 
-  return (0);
+  return 0;
 }
 
-void mutt_set_followup_to (ENVELOPE *e)
+void mutt_set_followup_to(struct Envelope *e)
 {
-  ADDRESS *t = NULL;
-  ADDRESS *from;
+  struct Address *t = NULL;
+  struct Address *from = NULL;
 
-  /* 
+  /*
    * Only generate the Mail-Followup-To if the user has requested it, and
    * it hasn't already been set
    */
 
-  if (!option (OPTFOLLOWUPTO))
+  if (!option(OPT_FOLLOW_UP_TO))
     return;
 #ifdef USE_NNTP
-  if (option (OPTNEWSSEND))
+  if (option(OPT_NEWS_SEND))
   {
-    if (!e->followup_to && e->newsgroups && (strrchr (e->newsgroups, ',')))
-      e->followup_to = safe_strdup (e->newsgroups);
+    if (!e->followup_to && e->newsgroups && (strrchr(e->newsgroups, ',')))
+      e->followup_to = safe_strdup(e->newsgroups);
     return;
   }
 #endif
 
   if (!e->mail_followup_to)
   {
-    if (mutt_is_list_cc (0, e->to, e->cc))
+    if (mutt_is_list_cc(0, e->to, e->cc))
     {
-      /* 
+      /*
        * this message goes to known mailing lists, so create a proper
        * mail-followup-to header
        */
 
-      t = rfc822_append (&e->mail_followup_to, e->to, 0);
-      rfc822_append (&t, e->cc, 1);
+      t = rfc822_append(&e->mail_followup_to, e->to, 0);
+      rfc822_append(&t, e->cc, 1);
     }
 
     /* remove ourselves from the mail-followup-to header */
-    e->mail_followup_to = remove_user (e->mail_followup_to, 0);
+    e->mail_followup_to = remove_user(e->mail_followup_to, 0);
 
     /*
      * If we are not subscribed to any of the lists in question,
-     * re-add ourselves to the mail-followup-to header.  The 
+     * re-add ourselves to the mail-followup-to header.  The
      * mail-followup-to header generated is a no-op with group-reply,
      * but makes sure list-reply has the desired effect.
      */
 
-    if (e->mail_followup_to && !mutt_is_list_recipient (0, e->to, e->cc))
+    if (e->mail_followup_to && !mutt_is_list_recipient(0, e->to, e->cc))
     {
       if (e->reply_to)
-	from = rfc822_cpy_adr (e->reply_to, 0);
+        from = rfc822_cpy_adr(e->reply_to, 0);
       else if (e->from)
-	from = rfc822_cpy_adr (e->from, 0);
+        from = rfc822_cpy_adr(e->from, 0);
       else
-	from = mutt_default_from ();
-      
+        from = mutt_default_from();
+
       if (from)
       {
-	/* Normally, this loop will not even be entered. */
-	for (t = from; t && t->next; t = t->next)
-	  ;
-	
-	t->next = e->mail_followup_to; 	/* t cannot be NULL at this point. */
-	e->mail_followup_to = from;
+        /* Normally, this loop will not even be entered. */
+        for (t = from; t && t->next; t = t->next)
+          ;
+
+        t->next = e->mail_followup_to; /* t cannot be NULL at this point. */
+        e->mail_followup_to = from;
       }
     }
-    
-    e->mail_followup_to = mutt_remove_duplicates (e->mail_followup_to);
-    
+
+    e->mail_followup_to = mutt_remove_duplicates(e->mail_followup_to);
   }
 }
 
-
-/* look through the recipients of the message we are replying to, and if
-   we find an address that matches $alternates, we use that as the default
-   from field */
-static ADDRESS *set_reverse_name (ENVELOPE *env)
+/**
+ * set_reverse_name - Try to set the 'from' field from the recipients
+ *
+ * look through the recipients of the message we are replying to, and if we
+ * find an address that matches $alternates, we use that as the default from
+ * field
+ */
+static struct Address *set_reverse_name(struct Envelope *env)
 {
-  ADDRESS *tmp;
+  struct Address *tmp = NULL;
 
   for (tmp = env->to; tmp; tmp = tmp->next)
   {
-    if (mutt_addr_is_user (tmp))
+    if (mutt_addr_is_user(tmp))
       break;
   }
   if (!tmp)
   {
     for (tmp = env->cc; tmp; tmp = tmp->next)
     {
-      if (mutt_addr_is_user (tmp))
-	break;
+      if (mutt_addr_is_user(tmp))
+        break;
     }
   }
-  if (!tmp && mutt_addr_is_user (env->from))
+  if (!tmp && mutt_addr_is_user(env->from))
     tmp = env->from;
   if (tmp)
   {
-    tmp = rfc822_cpy_adr_real (tmp);
+    tmp = rfc822_cpy_adr_real(tmp);
     /* when $reverse_realname is not set, clear the personal name so that it
      * may be set vi a reply- or send-hook.
      */
-    if (!option (OPTREVREAL))
-      FREE (&tmp->personal);
+    if (!option(OPT_REV_REAL))
+      FREE(&tmp->personal);
   }
-  return (tmp);
+  return tmp;
 }
 
-ADDRESS *mutt_default_from (void)
+struct Address *mutt_default_from(void)
 {
-  ADDRESS *adr;
+  struct Address *adr = NULL;
   const char *fqdn = mutt_fqdn(1);
 
-  /* 
+  /*
    * Note: We let $from override $realname here.  Is this the right
-   * thing to do? 
+   * thing to do?
    */
 
   if (From)
-    adr = rfc822_cpy_adr_real (From);
-  else if (option (OPTUSEDOMAIN))
+    adr = rfc822_cpy_adr_real(From);
+  else if (option(OPT_USE_DOMAIN))
   {
-    adr = rfc822_new_address ();
-    adr->mailbox = safe_malloc (mutt_strlen (Username) + mutt_strlen (fqdn) + 2);
-    sprintf (adr->mailbox, "%s@%s", NONULL(Username), NONULL(fqdn));	/* __SPRINTF_CHECKED__ */
+    adr = rfc822_new_address();
+    adr->mailbox = safe_malloc(mutt_strlen(Username) + mutt_strlen(fqdn) + 2);
+    sprintf(adr->mailbox, "%s@%s", NONULL(Username), NONULL(fqdn));
   }
   else
   {
-    adr = rfc822_new_address ();
-    adr->mailbox = safe_strdup (NONULL(Username));
+    adr = rfc822_new_address();
+    adr->mailbox = safe_strdup(NONULL(Username));
   }
-  
-  return (adr);
+
+  return adr;
 }
 
-static int send_message (HEADER *msg)
-{  
+static int send_message(struct Header *msg)
+{
   char tempfile[_POSIX_PATH_MAX];
-  FILE *tempfp;
+  FILE *tempfp = NULL;
   int i;
 #ifdef USE_SMTP
   short old_write_bcc;
 #endif
-  
+
   /* Write out the message in MIME form. */
-  mutt_mktemp (tempfile, sizeof (tempfile));
-  if ((tempfp = safe_fopen (tempfile, "w")) == NULL)
-    return (-1);
+  mutt_mktemp(tempfile, sizeof(tempfile));
+  if ((tempfp = safe_fopen(tempfile, "w")) == NULL)
+    return -1;
 
 #ifdef USE_SMTP
-  old_write_bcc = option (OPTWRITEBCC);
+  old_write_bcc = option(OPT_WRITE_BCC);
   if (SmtpUrl)
-    unset_option (OPTWRITEBCC);
+    unset_option(OPT_WRITE_BCC);
 #endif
 #ifdef MIXMASTER
-  mutt_write_rfc822_header (tempfp, msg->env, msg->content, 0, msg->chain ? 1 : 0);
+  mutt_write_rfc822_header(tempfp, msg->env, msg->content, 0, !STAILQ_EMPTY(&msg->chain));
 #endif
 #ifndef MIXMASTER
-  mutt_write_rfc822_header (tempfp, msg->env, msg->content, 0, 0);
+  mutt_write_rfc822_header(tempfp, msg->env, msg->content, 0, 0);
 #endif
 #ifdef USE_SMTP
   if (old_write_bcc)
-    set_option (OPTWRITEBCC);
+    set_option(OPT_WRITE_BCC);
 #endif
-  
-  fputc ('\n', tempfp); /* tie off the header. */
 
-  if ((mutt_write_mime_body (msg->content, tempfp) == -1))
+  fputc('\n', tempfp); /* tie off the header. */
+
+  if ((mutt_write_mime_body(msg->content, tempfp) == -1))
   {
-    safe_fclose (&tempfp);
-    unlink (tempfile);
-    return (-1);
+    safe_fclose(&tempfp);
+    unlink(tempfile);
+    return -1;
   }
-  
-  if (fclose (tempfp) != 0)
+
+  if (fclose(tempfp) != 0)
   {
-    mutt_perror (tempfile);
-    unlink (tempfile);
-    return (-1);
+    mutt_perror(tempfile);
+    unlink(tempfile);
+    return -1;
   }
 
 #ifdef MIXMASTER
-  if (msg->chain)
-    return mix_send_message (msg->chain, tempfile);
+  if (!STAILQ_EMPTY(&msg->chain))
+    return mix_send_message(&msg->chain, tempfile);
 #endif
 
-#if USE_SMTP
+#ifdef USE_SMTP
 #ifdef USE_NNTP
-  if (!option (OPTNEWSSEND))
+  if (!option(OPT_NEWS_SEND))
 #endif
-  if (SmtpUrl)
-      return mutt_smtp_send (msg->env->from, msg->env->to, msg->env->cc,
-                             msg->env->bcc, tempfile,
-                             (msg->content->encoding == ENC8BIT));
+    if (SmtpUrl)
+      return mutt_smtp_send(msg->env->from, msg->env->to, msg->env->cc, msg->env->bcc,
+                            tempfile, (msg->content->encoding == ENC8BIT));
 #endif /* USE_SMTP */
 
-  i = mutt_invoke_sendmail (msg->env->from, msg->env->to, msg->env->cc, 
-			    msg->env->bcc, tempfile,
-                            (msg->content->encoding == ENC8BIT));
-  return (i);
+  i = mutt_invoke_sendmail(msg->env->from, msg->env->to, msg->env->cc, msg->env->bcc,
+                           tempfile, (msg->content->encoding == ENC8BIT));
+  return i;
 }
 
-/* rfc2047 encode the content-descriptions */
-void mutt_encode_descriptions (BODY *b, short recurse)
+/**
+ * mutt_encode_descriptions - rfc2047 encode the content-descriptions
+ */
+void mutt_encode_descriptions(struct Body *b, short recurse)
 {
-  BODY *t;
+  struct Body *t = NULL;
 
   for (t = b; t; t = t->next)
   {
     if (t->description)
     {
-      rfc2047_encode_string (&t->description);
+      rfc2047_encode_string(&t->description);
     }
     if (recurse && t->parts)
-      mutt_encode_descriptions (t->parts, recurse);
+      mutt_encode_descriptions(t->parts, recurse);
   }
 }
 
-/* rfc2047 decode them in case of an error */
-static void decode_descriptions (BODY *b)
+/**
+ * decode_descriptions - rfc2047 decode them in case of an error
+ */
+static void decode_descriptions(struct Body *b)
 {
-  BODY *t;
-  
+  struct Body *t = NULL;
+
   for (t = b; t; t = t->next)
   {
     if (t->description)
     {
-      rfc2047_decode (&t->description);
+      rfc2047_decode(&t->description);
     }
     if (t->parts)
-      decode_descriptions (t->parts);
+      decode_descriptions(t->parts);
   }
 }
 
-static void fix_end_of_file (const char *data)
+static void fix_end_of_file(const char *data)
 {
-  FILE *fp;
-  int c;
-  
-  if ((fp = safe_fopen (data, "a+")) == NULL)
+  FILE *fp = NULL;
+
+  if ((fp = safe_fopen(data, "a+")) == NULL)
     return;
-  fseek (fp,-1,SEEK_END);
-  if ((c = fgetc(fp)) != '\n')
-    fputc ('\n', fp);
-  safe_fclose (&fp);
+  if (fseek(fp, -1, SEEK_END) >= 0)
+  {
+    int c = fgetc(fp);
+    if (c != '\n')
+      fputc('\n', fp);
+  }
+  safe_fclose(&fp);
 }
 
-int mutt_compose_to_sender (HEADER *hdr)
+int mutt_compose_to_sender(struct Header *hdr)
 {
-  HEADER *msg = mutt_new_header();
+  struct Header *msg = mutt_new_header();
 
   msg->env = mutt_new_envelope();
   if (!hdr)
   {
-    int i;
-    for (i = 0; i < Context->vcount; i++)
+    for (int i = 0; i < Context->vcount; i++)
     {
       hdr = Context->hdrs[Context->v2r[(i)]];
       if (hdr->tagged)
-        rfc822_append (&msg->env->to, hdr->env->from, 0);
+        rfc822_append(&msg->env->to, hdr->env->from, 0);
     }
   }
   else
-    msg->env->to = rfc822_cpy_adr (hdr->env->from, 0);
+    msg->env->to = rfc822_cpy_adr(hdr->env->from, 0);
 
-  return ci_send_message (0, msg, NULL, NULL, NULL);
+  return ci_send_message(0, msg, NULL, NULL, NULL);
 }
 
-int mutt_resend_message (FILE *fp, CONTEXT *ctx, HEADER *cur)
+int mutt_resend_message(FILE *fp, struct Context *ctx, struct Header *cur)
 {
-  HEADER *msg = mutt_new_header ();
-  
-  if (mutt_prepare_template (fp, ctx, msg, cur, 1) < 0)
+  struct Header *msg = mutt_new_header();
+
+  if (mutt_prepare_template(fp, ctx, msg, cur, 1) < 0)
+  {
+    mutt_free_header(&msg);
     return -1;
+  }
 
   if (WithCrypto)
   {
@@ -1203,7 +1227,7 @@ int mutt_resend_message (FILE *fp, CONTEXT *ctx, HEADER *cur)
      * so fix that here */
     if (!(msg->security & (APPLICATION_SMIME | APPLICATION_PGP)))
     {
-      if ((WithCrypto & APPLICATION_SMIME) && option (OPTSMIMEISDEFAULT))
+      if ((WithCrypto & APPLICATION_SMIME) && option(OPT_SMIME_IS_DEFAULT))
         msg->security |= APPLICATION_SMIME;
       else if (WithCrypto & APPLICATION_PGP)
         msg->security |= APPLICATION_PGP;
@@ -1211,29 +1235,29 @@ int mutt_resend_message (FILE *fp, CONTEXT *ctx, HEADER *cur)
         msg->security |= APPLICATION_SMIME;
     }
 
-    if (option (OPTCRYPTOPPORTUNISTICENCRYPT))
+    if (option(OPT_CRYPT_OPPORTUNISTIC_ENCRYPT))
     {
       msg->security |= OPPENCRYPT;
       crypt_opportunistic_encrypt(msg);
     }
   }
 
-  return ci_send_message (SENDRESEND, msg, NULL, ctx, cur);
+  return ci_send_message(SENDRESEND, msg, NULL, ctx, cur);
 }
 
-static int is_reply (HEADER *reply, HEADER *orig)
+static int is_reply(struct Header *reply, struct Header *orig)
 {
   if (!reply || !reply->env || !orig || !orig->env)
     return 0;
-  return mutt_find_list (orig->env->references, reply->env->message_id) ||
-         mutt_find_list (orig->env->in_reply_to, reply->env->message_id);
+  return mutt_list_find(&orig->env->references, reply->env->message_id) ||
+         mutt_list_find(&orig->env->in_reply_to, reply->env->message_id);
 }
 
-static int has_recips (ADDRESS *a)
+static int has_recips(struct Address *a)
 {
   int c = 0;
 
-  for ( ; a; a = a->next)
+  for (; a; a = a->next)
   {
     if (!a->mailbox || a->group)
       continue;
@@ -1242,87 +1266,87 @@ static int has_recips (ADDRESS *a)
   return c;
 }
 
-int
-mutt_search_attach_keyword (char *filename)
+static int search_attach_keyword(char *filename)
 {
   /* Search for the regex in AttachKeyword within a file */
   if (!AttachKeyword.rx)
     return 0;
 
-  FILE *attf = safe_fopen (filename, "r");
+  FILE *attf = safe_fopen(filename, "r");
   if (!attf)
     return 0;
 
-  char *inputline = safe_malloc (LONG_STRING);
+  char *inputline = safe_malloc(LONG_STRING);
   int found = 0;
-  while (!feof (attf))
+  while (!feof(attf))
   {
-    fgets (inputline, LONG_STRING, attf);
-    if (regexec (QuoteRegexp.rx, inputline, 0, NULL, 0) != 0 &&
-        regexec (AttachKeyword.rx, inputline, 0, NULL, 0) == 0)
+    fgets(inputline, LONG_STRING, attf);
+    if (regexec(QuoteRegexp.rx, inputline, 0, NULL, 0) != 0 &&
+        regexec(AttachKeyword.rx, inputline, 0, NULL, 0) == 0)
     {
       found = 1;
       break;
     }
   }
-  FREE (&inputline);
-  safe_fclose (&attf);
+  FREE(&inputline);
+  safe_fclose(&attf);
   return found;
 }
 
-/*
- * Returns 0 if the message was successfully sent
- *        -1 if the message was aborted or an error occurred
- *         1 if the message was postponed
+/**
+ * ci_send_message - Send an email
+ * @param flags    send mode
+ * @param msg      template to use for new message
+ * @param tempfile file specified by -i or -H
+ * @param ctx      current mailbox
+ * @param cur      current message
+ * @retval  0 Message was successfully sent
+ * @retval -1 Message was aborted or an error occurred
+ * @retval  1 Message was postponed
  */
-int
-ci_send_message (int flags,		/* send mode */
-		 HEADER *msg,		/* template to use for new message */
-		 char *tempfile,	/* file specified by -i or -H */
-		 CONTEXT *ctx,		/* current mailbox */
-		 HEADER *cur)		/* current message */
+int ci_send_message(int flags, struct Header *msg, char *tempfile,
+                    struct Context *ctx, struct Header *cur)
 {
   char buffer[LONG_STRING];
   char fcc[_POSIX_PATH_MAX] = ""; /* where to copy this message */
   FILE *tempfp = NULL;
-  BODY *pbody;
-  int i, killfrom = 0;
-  int fcc_error = 0;
-  int free_clear_content = 0;
+  struct Body *pbody = NULL;
+  int i;
+  bool killfrom = false;
+  bool fcc_error = false;
+  bool free_clear_content = false;
 
-  BODY *save_content = NULL;
-  BODY *clear_content = NULL;
+  struct Body *save_content = NULL;
+  struct Body *clear_content = NULL;
   char *pgpkeylist = NULL;
   /* save current value of "pgp_sign_as"  and "smime_default_key" */
   char *pgp_signas = NULL;
   char *smime_default_key = NULL;
   char *tag = NULL, *err = NULL;
-  char *ctype;
+  char *ctype = NULL;
   char *finalpath = NULL;
 
   int rv = -1;
-  
+
 #ifdef USE_NNTP
   if (flags & SENDNEWS)
-    set_option (OPTNEWSSEND);
+    set_option(OPT_NEWS_SEND);
   else
-    unset_option (OPTNEWSSEND);
+    unset_option(OPT_NEWS_SEND);
 #endif
 
-  if (!flags && !msg && quadoption (OPT_RECALL) != MUTT_NO &&
-      mutt_num_postponed (1))
+  if (!flags && !msg && quadoption(OPT_RECALL) != MUTT_NO && mutt_num_postponed(1))
   {
     /* If the user is composing a new message, check to see if there
      * are any postponed messages first.
      */
-    if ((i = query_quadoption (OPT_RECALL, _("Recall postponed message?"))) == MUTT_ABORT)
+    if ((i = query_quadoption(OPT_RECALL, _("Recall postponed message?"))) == MUTT_ABORT)
       return rv;
 
-    if(i == MUTT_YES)
+    if (i == MUTT_YES)
       flags |= SENDPOSTPONED;
   }
-  
-  
+
   if (flags & SENDPOSTPONED)
   {
     if (WithCrypto & APPLICATION_PGP)
@@ -1338,12 +1362,12 @@ ci_send_message (int flags,		/* send mode */
 
   if (!msg)
   {
-    msg = mutt_new_header ();
+    msg = mutt_new_header();
 
     if (flags == SENDPOSTPONED)
     {
-      if ((flags = mutt_get_postponed (ctx, msg, &cur, fcc, sizeof (fcc))) < 0)
-	goto cleanup;
+      if ((flags = mutt_get_postponed(ctx, msg, &cur, fcc, sizeof(fcc))) < 0)
+        goto cleanup;
 #ifdef USE_NNTP
       /*
        * If postponed message is a news article, it have
@@ -1351,84 +1375,84 @@ ci_send_message (int flags,		/* send mode */
        */
       if (msg->env->newsgroups)
       {
-	flags |= SENDNEWS;
-	set_option (OPTNEWSSEND);
+        flags |= SENDNEWS;
+        set_option(OPT_NEWS_SEND);
       }
       else
       {
-	flags &= ~SENDNEWS;
-	unset_option (OPTNEWSSEND);
+        flags &= ~SENDNEWS;
+        unset_option(OPT_NEWS_SEND);
       }
 #endif
     }
 
-    if (flags & (SENDPOSTPONED|SENDRESEND))
+    if (flags & (SENDPOSTPONED | SENDRESEND))
     {
-      if ((tempfp = safe_fopen (msg->content->filename, "a+")) == NULL)
+      if ((tempfp = safe_fopen(msg->content->filename, "a+")) == NULL)
       {
-	mutt_perror (msg->content->filename);
-	goto cleanup;
+        mutt_perror(msg->content->filename);
+        goto cleanup;
       }
     }
 
     if (!msg->env)
-      msg->env = mutt_new_envelope ();
+      msg->env = mutt_new_envelope();
   }
 
   /* Parse and use an eventual list-post header */
-  if ((flags & SENDLISTREPLY) 
-      && cur && cur->env && cur->env->list_post) 
+  if ((flags & SENDLISTREPLY) && cur && cur->env && cur->env->list_post)
   {
     /* Use any list-post header as a template */
-    url_parse_mailto (msg->env, NULL, cur->env->list_post);
+    url_parse_mailto(msg->env, NULL, cur->env->list_post);
     /* We don't let them set the sender's address. */
-    rfc822_free_address (&msg->env->from);
+    rfc822_free_address(&msg->env->from);
   }
-  
-  if (! (flags & (SENDKEY | SENDPOSTPONED | SENDRESEND)))
+
+  if (!(flags & (SENDKEY | SENDPOSTPONED | SENDRESEND)))
   {
     /* When SENDDRAFTFILE is set, the caller has already
      * created the "parent" body structure.
      */
-    if (! (flags & SENDDRAFTFILE))
+    if (!(flags & SENDDRAFTFILE))
     {
-      pbody = mutt_new_body ();
+      pbody = mutt_new_body();
       pbody->next = msg->content; /* don't kill command-line attachments */
       msg->content = pbody;
 
-      if (!(ctype = safe_strdup (ContentType)))
-        ctype = safe_strdup ("text/plain");
-      mutt_parse_content_type (ctype, msg->content);
-      FREE (&ctype);
-      msg->content->unlink = 1;
-      msg->content->use_disp = 0;
+      if (!(ctype = safe_strdup(ContentType)))
+        ctype = safe_strdup("text/plain");
+      mutt_parse_content_type(ctype, msg->content);
+      FREE(&ctype);
+      msg->content->unlink = true;
+      msg->content->use_disp = false;
       msg->content->disposition = DISPINLINE;
 
       if (!tempfile)
       {
-        mutt_mktemp (buffer, sizeof (buffer));
-        tempfp = safe_fopen (buffer, "w+");
-        msg->content->filename = safe_strdup (buffer);
+        mutt_mktemp(buffer, sizeof(buffer));
+        tempfp = safe_fopen(buffer, "w+");
+        msg->content->filename = safe_strdup(buffer);
       }
       else
       {
-        tempfp = safe_fopen (tempfile, "a+");
-        msg->content->filename = safe_strdup (tempfile);
+        tempfp = safe_fopen(tempfile, "a+");
+        msg->content->filename = safe_strdup(tempfile);
       }
     }
     else
-      tempfp = safe_fopen (msg->content->filename, "a+");
+      tempfp = safe_fopen(msg->content->filename, "a+");
 
     if (!tempfp)
     {
-      dprint(1,(debugfile, "newsend_message: can't create tempfile %s (errno=%d)\n", msg->content->filename, errno));
-      mutt_perror (msg->content->filename);
+      mutt_debug(1, "newsend_message: can't create tempfile %s (errno=%d)\n",
+                 msg->content->filename, errno);
+      mutt_perror(msg->content->filename);
       goto cleanup;
     }
   }
 
   /* this is handled here so that the user can match ~f in send-hook */
-  if (cur && option (OPTREVNAME) && !(flags & (SENDPOSTPONED|SENDRESEND)))
+  if (cur && option(OPT_REV_NAME) && !(flags & (SENDPOSTPONED | SENDRESEND)))
   {
     /* we shouldn't have to worry about freeing `msg->env->from' before
      * setting it here since this code will only execute when doing some
@@ -1443,10 +1467,12 @@ ci_send_message (int flags,		/* send mode */
      */
 
     if (msg->env->from)
-        dprint (5, (debugfile, "ci_send_message: msg->env->from before set_reverse_name: %s\n", msg->env->from->mailbox));
-    msg->env->from = set_reverse_name (cur->env);
+      mutt_debug(
+          5, "ci_send_message: msg->env->from before set_reverse_name: %s\n",
+          msg->env->from->mailbox);
+    msg->env->from = set_reverse_name(cur->env);
   }
-  if (cur && option (OPTREPLYWITHXORIG) && !(flags & (SENDPOSTPONED|SENDRESEND|SENDFORWARD)))
+  if (cur && option(OPT_REPLY_WITH_XORIG) && !(flags & (SENDPOSTPONED | SENDRESEND | SENDFORWARD)))
   {
     /* We shouldn't have to worry about freeing `msg->env->from' before
      * setting it here since this code will only execute when doing some
@@ -1454,7 +1480,7 @@ ci_send_message (int flags,		/* send mode */
      * line option.
      *
      * If there is already a from address recorded in `msg->env->from',
-     * then it theoretically comes from OPTREVNAME handling, and we don't use
+     * then it theoretically comes from OPT_REV_NAME handling, and we don't use
      * the `X-Orig-To header'.
      */
     if (cur->env->x_original_to && !msg->env->from)
@@ -1462,37 +1488,38 @@ ci_send_message (int flags,		/* send mode */
       msg->env->from = cur->env->x_original_to;
       /* Not more than one from address */
       msg->env->from->next = NULL;
-      dprint (5, (debugfile, "ci_send_message: msg->env->from extracted from X-Original-To: header: %s\n", msg->env->from->mailbox));
+      mutt_debug(5, "ci_send_message: msg->env->from extracted from "
+                    "X-Original-To: header: %s\n",
+                 msg->env->from->mailbox);
     }
   }
 
-  if (! (flags & (SENDPOSTPONED|SENDRESEND)) &&
-      ! ((flags & SENDDRAFTFILE) && option (OPTRESUMEDRAFTFILES)))
+  if (!(flags & (SENDPOSTPONED | SENDRESEND)) &&
+      !((flags & SENDDRAFTFILE) && option(OPT_RESUME_DRAFT_FILES)))
   {
     if ((flags & (SENDREPLY | SENDFORWARD)) && ctx &&
-	envelope_defaults (msg->env, ctx, cur, flags) == -1)
+        envelope_defaults(msg->env, ctx, cur, flags) == -1)
       goto cleanup;
 
-    if (option (OPTHDRS))
-      process_user_recips (msg->env);
+    if (option(OPT_HDRS))
+      process_user_recips(msg->env);
 
     /* Expand aliases and remove duplicates/crossrefs */
-    mutt_expand_aliases_env (msg->env);
-    
+    mutt_expand_aliases_env(msg->env);
+
     if (flags & SENDREPLY)
-      mutt_fix_reply_recipients (msg->env);
+      mutt_fix_reply_recipients(msg->env);
 
 #ifdef USE_NNTP
     if ((flags & SENDNEWS) && ctx && ctx->magic == MUTT_NNTP && !msg->env->newsgroups)
-      msg->env->newsgroups = safe_strdup (((NNTP_DATA *)ctx->data)->group);
+      msg->env->newsgroups = safe_strdup(((struct NntpData *) ctx->data)->group);
 #endif
 
-    if (! (flags & (SENDMAILX|SENDBATCH)) &&
-	! (option (OPTAUTOEDIT) && option (OPTEDITHDRS)) &&
-	! ((flags & SENDREPLY) && option (OPTFASTREPLY)))
+    if (!(flags & (SENDMAILX | SENDBATCH)) && !(option(OPT_AUTO_EDIT) && option(OPT_EDIT_HDRS)) &&
+        !((flags & SENDREPLY) && option(OPT_FAST_REPLY)))
     {
-      if (edit_envelope (msg->env, flags) == -1)
-	goto cleanup;
+      if (edit_envelope(msg->env, flags) == -1)
+        goto cleanup;
     }
 
     /* the from address must be set here regardless of whether or not
@@ -1502,26 +1529,26 @@ ci_send_message (int flags,		/* send mode */
 
     if (!msg->env->from)
     {
-      msg->env->from = mutt_default_from ();
-      killfrom = 1;
+      msg->env->from = mutt_default_from();
+      killfrom = true;
     }
 
     if ((flags & SENDREPLY) && cur)
     {
       /* change setting based upon message we are replying to */
-      mutt_message_hook (ctx, cur, MUTT_REPLYHOOK);
+      mutt_message_hook(ctx, cur, MUTT_REPLYHOOK);
 
       /*
        * set the replied flag for the message we are generating so that the
        * user can use ~Q in a send-hook to know when reply-hook's are also
        * being used.
        */
-      msg->replied = 1;
+      msg->replied = true;
     }
 
     /* change settings based upon recipients */
-    
-    mutt_message_hook (NULL, msg, MUTT_SENDHOOK);
+
+    mutt_message_hook(NULL, msg, MUTT_SENDHOOK);
 
     /*
      * Unset the replied flag from the message we are composing since it is
@@ -1529,70 +1556,70 @@ ci_send_message (int flags,		/* send mode */
      * this message was erroneously get the 'R'eplied flag when stored in
      * a maildir-style mailbox.
      */
-    msg->replied = 0;
+    msg->replied = false;
 
-    if (! (flags & SENDKEY))
+    if (!(flags & SENDKEY))
     {
-      if (option (OPTTEXTFLOWED) && msg->content->type == TYPETEXT && !ascii_strcasecmp (msg->content->subtype, "plain"))
-        mutt_set_parameter ("format", "flowed", &msg->content->parameter);
+      if (option(OPT_TEXT_FLOWED) && msg->content->type == TYPETEXT &&
+          (mutt_strcasecmp(msg->content->subtype, "plain") == 0))
+        mutt_set_parameter("format", "flowed", &msg->content->parameter);
     }
 
     /* $use_from and/or $from might have changed in a send-hook */
     if (killfrom)
     {
-      rfc822_free_address (&msg->env->from);
-      if (option (OPTUSEFROM) && !(flags & (SENDPOSTPONED|SENDRESEND)))
-	msg->env->from = mutt_default_from ();
-      killfrom = 0;
+      rfc822_free_address(&msg->env->from);
+      if (option(OPT_USE_FROM) && !(flags & (SENDPOSTPONED | SENDRESEND)))
+        msg->env->from = mutt_default_from();
+      killfrom = false;
     }
 
-    if (option (OPTHDRS))
-      process_user_header (msg->env);
+    if (option(OPT_HDRS))
+      process_user_header(msg->env);
 
     if (flags & SENDBATCH)
-       mutt_copy_stream (stdin, tempfp);
+      mutt_copy_stream(stdin, tempfp);
 
-    if (option (OPTSIGONTOP) && ! (flags & (SENDMAILX|SENDKEY|SENDBATCH))
-	&& Editor && mutt_strcmp (Editor, "builtin") != 0)
-      append_signature (tempfp);
+    if (option(OPT_SIG_ON_TOP) && !(flags & (SENDMAILX | SENDKEY | SENDBATCH)) &&
+        Editor && (mutt_strcmp(Editor, "builtin") != 0))
+      append_signature(tempfp);
 
     /* include replies/forwarded messages, unless we are given a template */
-    if (!tempfile && (ctx || !(flags & (SENDREPLY|SENDFORWARD)))
-	&& generate_body (tempfp, msg, flags, ctx, cur) == -1)
+    if (!tempfile && (ctx || !(flags & (SENDREPLY | SENDFORWARD))) &&
+        generate_body(tempfp, msg, flags, ctx, cur) == -1)
       goto cleanup;
 
-    if (!option (OPTSIGONTOP) && ! (flags & (SENDMAILX|SENDKEY|SENDBATCH))
-	&& Editor && mutt_strcmp (Editor, "builtin") != 0)
-      append_signature (tempfp);
+    if (!option(OPT_SIG_ON_TOP) && !(flags & (SENDMAILX | SENDKEY | SENDBATCH)) &&
+        Editor && (mutt_strcmp(Editor, "builtin") != 0))
+      append_signature(tempfp);
   }
-  
-  /* 
+
+  /*
    * This hook is even called for postponed messages, and can, e.g., be
    * used for setting the editor, the sendmail path, or the
    * envelope sender.
    */
-  mutt_message_hook (NULL, msg, MUTT_SEND2HOOK);
+  mutt_message_hook(NULL, msg, MUTT_SEND2HOOK);
 
   /* wait until now to set the real name portion of our return address so
      that $realname can be set in a send-hook */
-  if (msg->env->from && !msg->env->from->personal
-      && !(flags & (SENDRESEND|SENDPOSTPONED)))
-    msg->env->from->personal = safe_strdup (Realname);
+  if (msg->env->from && !msg->env->from->personal && !(flags & (SENDRESEND | SENDPOSTPONED)))
+    msg->env->from->personal = safe_strdup(RealName);
 
   if (!((WithCrypto & APPLICATION_PGP) && (flags & SENDKEY)))
-    safe_fclose (&tempfp);
+    safe_fclose(&tempfp);
 
   if (flags & SENDMAILX)
   {
-    if (mutt_builtin_editor (msg->content->filename, msg, cur) == -1)
+    if (mutt_builtin_editor(msg->content->filename, msg, cur) == -1)
       goto cleanup;
   }
-  else if (! (flags & SENDBATCH))
+  else if (!(flags & SENDBATCH))
   {
     struct stat st;
-    time_t mtime = mutt_decrease_mtime (msg->content->filename, NULL);
+    time_t mtime = mutt_decrease_mtime(msg->content->filename, NULL);
 
-    mutt_update_encoding (msg->content);
+    mutt_update_encoding(msg->content);
 
     /*
      * Select whether or not the user's editor should be called now.  We
@@ -1604,70 +1631,70 @@ ci_send_message (int flags,		/* send mode */
      *    setting of $forward_edit because the user probably needs to add the
      *    recipients.
      */
-    if (! (flags & SENDKEY) &&
-	((flags & SENDFORWARD) == 0 ||
-	 (option (OPTEDITHDRS) && option (OPTAUTOEDIT)) ||
-	 query_quadoption (OPT_FORWEDIT, _("Edit forwarded message?")) == MUTT_YES))
+    if (!(flags & SENDKEY) &&
+        ((flags & SENDFORWARD) == 0 || (option(OPT_EDIT_HDRS) && option(OPT_AUTO_EDIT)) ||
+         query_quadoption(OPT_FORW_EDIT, _("Edit forwarded message?")) == MUTT_YES))
     {
       /* If the this isn't a text message, look for a mailcap edit command */
-      if (mutt_needs_mailcap (msg->content))
+      if (mutt_needs_mailcap(msg->content))
       {
-	if (!mutt_edit_attachment (msg->content))
+        if (!mutt_edit_attachment(msg->content))
           goto cleanup;
       }
-      else if (!Editor || mutt_strcmp ("builtin", Editor) == 0)
-	mutt_builtin_editor (msg->content->filename, msg, cur);
-      else if (option (OPTEDITHDRS))
+      else if (!Editor || (mutt_strcmp("builtin", Editor) == 0))
+        mutt_builtin_editor(msg->content->filename, msg, cur);
+      else if (option(OPT_EDIT_HDRS))
       {
-	mutt_env_to_local (msg->env);
-	mutt_edit_headers (Editor, msg->content->filename, msg, fcc, sizeof (fcc));
-	mutt_env_to_intl (msg->env, NULL, NULL);
+        mutt_env_to_local(msg->env);
+        mutt_edit_headers(Editor, msg->content->filename, msg, fcc, sizeof(fcc));
+        mutt_env_to_intl(msg->env, NULL, NULL);
       }
       else
       {
-	mutt_edit_file (Editor, msg->content->filename);
-	if (stat (msg->content->filename, &st) == 0)
-	{
-	  if (mtime != st.st_mtime)
-	    fix_end_of_file (msg->content->filename);
-	}
-	else
-	  mutt_perror (msg->content->filename);
+        mutt_edit_file(Editor, msg->content->filename);
+        if (stat(msg->content->filename, &st) == 0)
+        {
+          if (mtime != st.st_mtime)
+            fix_end_of_file(msg->content->filename);
+        }
+        else
+          mutt_perror(msg->content->filename);
       }
-      
+
       /* If using format=flowed, perform space stuffing.  Avoid stuffing when
        * recalling a postponed message where the stuffing was already
        * performed.  If it has already been performed, the format=flowed
        * parameter will be present.
        */
-      if (option (OPTTEXTFLOWED) && msg->content->type == TYPETEXT && !ascii_strcasecmp("plain", msg->content->subtype))
+      if (option(OPT_TEXT_FLOWED) && msg->content->type == TYPETEXT &&
+          (mutt_strcasecmp("plain", msg->content->subtype) == 0))
       {
-	char *p = mutt_get_parameter("format", msg->content->parameter);
-	if (ascii_strcasecmp("flowed", NONULL(p)))
-	  rfc3676_space_stuff (msg);
+        char *p = mutt_get_parameter("format", msg->content->parameter);
+        if (mutt_strcasecmp("flowed", NONULL(p)) != 0)
+          rfc3676_space_stuff(msg);
       }
 
-      mutt_message_hook (NULL, msg, MUTT_SEND2HOOK);
+      mutt_message_hook(NULL, msg, MUTT_SEND2HOOK);
     }
 
-    if (! (flags & (SENDPOSTPONED | SENDFORWARD | SENDKEY | SENDRESEND | SENDDRAFTFILE)))
+    if (!(flags & (SENDPOSTPONED | SENDFORWARD | SENDKEY | SENDRESEND | SENDDRAFTFILE)))
     {
-      if (stat (msg->content->filename, &st) == 0)
+      if (stat(msg->content->filename, &st) == 0)
       {
-	/* if the file was not modified, bail out now */
-	if (mtime == st.st_mtime && !msg->content->next &&
-	    query_quadoption (OPT_ABORT, _("Abort unmodified message?")) == MUTT_YES)
-	{
-	  mutt_message _("Aborted unmodified message.");
-	  goto cleanup;
-	}
+        /* if the file was not modified, bail out now */
+        if (mtime == st.st_mtime && !msg->content->next &&
+            query_quadoption(OPT_ABORT, _("Abort unmodified message?")) == MUTT_YES)
+        {
+          mutt_message(_("Aborted unmodified message."));
+          goto cleanup;
+        }
       }
       else
-	mutt_perror (msg->content->filename);
+        mutt_perror(msg->content->filename);
     }
   }
 
-  /* 
+  /*
    * Set the message security unless:
    * 1) crypto support is not enabled (WithCrypto==0)
    * 2) pgp: header field was present during message editing with $edit_headers (msg->security != 0)
@@ -1679,72 +1706,73 @@ ci_send_message (int flags,		/* send mode */
    * This is done after allowing the user to edit the message so that security
    * settings can be configured with send2-hook and $edit_headers.
    */
-  if (WithCrypto && (msg->security == 0) && !(flags & (SENDBATCH | SENDMAILX | SENDPOSTPONED | SENDRESEND)))
+  if (WithCrypto && (msg->security == 0) &&
+      !(flags & (SENDBATCH | SENDMAILX | SENDPOSTPONED | SENDRESEND)))
   {
-    if (option (OPTCRYPTAUTOSIGN))
+    if (option(OPT_CRYPT_AUTO_SIGN))
       msg->security |= SIGN;
-    if (option (OPTCRYPTAUTOENCRYPT))
+    if (option(OPT_CRYPT_AUTO_ENCRYPT))
       msg->security |= ENCRYPT;
-    if (option (OPTCRYPTREPLYENCRYPT) && cur && (cur->security & ENCRYPT))
+    if (option(OPT_CRYPT_REPLY_ENCRYPT) && cur && (cur->security & ENCRYPT))
       msg->security |= ENCRYPT;
-    if (option (OPTCRYPTREPLYSIGN) && cur && (cur->security & SIGN))
+    if (option(OPT_CRYPT_REPLY_SIGN) && cur && (cur->security & SIGN))
       msg->security |= SIGN;
-    if (option (OPTCRYPTREPLYSIGNENCRYPTED) && cur && (cur->security & ENCRYPT))
+    if (option(OPT_CRYPT_REPLY_SIGN_ENCRYPTED) && cur && (cur->security & ENCRYPT))
       msg->security |= SIGN;
     if ((WithCrypto & APPLICATION_PGP) &&
-        ((msg->security & (ENCRYPT | SIGN)) || option (OPTCRYPTOPPORTUNISTICENCRYPT)))
+        ((msg->security & (ENCRYPT | SIGN)) || option(OPT_CRYPT_OPPORTUNISTIC_ENCRYPT)))
     {
-      if (option (OPTPGPAUTOINLINE))
-	msg->security |= INLINE;
-      if (option (OPTPGPREPLYINLINE) && cur && (cur->security & INLINE))
-	msg->security |= INLINE;
+      if (option(OPT_PGP_AUTO_INLINE))
+        msg->security |= INLINE;
+      if (option(OPT_PGP_REPLY_INLINE) && cur && (cur->security & INLINE))
+        msg->security |= INLINE;
     }
 
-    if (msg->security || option (OPTCRYPTOPPORTUNISTICENCRYPT))
+    if (msg->security || option(OPT_CRYPT_OPPORTUNISTIC_ENCRYPT))
     {
-      /* 
+      /*
        * When replying / forwarding, use the original message's
        * crypto system.  According to the documentation,
        * smime_is_default should be disregarded here.
-       * 
+       *
        * Problem: At least with forwarding, this doesn't really
        * make much sense. Should we have an option to completely
        * disable individual mechanisms at run-time?
        */
       if (cur)
       {
-	if ((WithCrypto & APPLICATION_PGP) && option (OPTCRYPTAUTOPGP) 
-	    && (cur->security & APPLICATION_PGP))
-	  msg->security |= APPLICATION_PGP;
-	else if ((WithCrypto & APPLICATION_SMIME) && option (OPTCRYPTAUTOSMIME)
-	    && (cur->security & APPLICATION_SMIME))
-	  msg->security |= APPLICATION_SMIME;
+        if ((WithCrypto & APPLICATION_PGP) && option(OPT_CRYPT_AUTO_PGP) &&
+            (cur->security & APPLICATION_PGP))
+          msg->security |= APPLICATION_PGP;
+        else if ((WithCrypto & APPLICATION_SMIME) && option(OPT_CRYPT_AUTO_SMIME) &&
+                 (cur->security & APPLICATION_SMIME))
+          msg->security |= APPLICATION_SMIME;
       }
 
       /*
        * No crypto mechanism selected? Use availability + smime_is_default
-       * for the decision. 
+       * for the decision.
        */
       if (!(msg->security & (APPLICATION_SMIME | APPLICATION_PGP)))
       {
-	if ((WithCrypto & APPLICATION_SMIME) && option (OPTCRYPTAUTOSMIME) 
-	    && option (OPTSMIMEISDEFAULT))
-	  msg->security |= APPLICATION_SMIME;
-	else if ((WithCrypto & APPLICATION_PGP) && option (OPTCRYPTAUTOPGP))
-	  msg->security |= APPLICATION_PGP;
-	else if ((WithCrypto & APPLICATION_SMIME) && option (OPTCRYPTAUTOSMIME))
-	  msg->security |= APPLICATION_SMIME;
+        if ((WithCrypto & APPLICATION_SMIME) && option(OPT_CRYPT_AUTO_SMIME) &&
+            option(OPT_SMIME_IS_DEFAULT))
+          msg->security |= APPLICATION_SMIME;
+        else if ((WithCrypto & APPLICATION_PGP) && option(OPT_CRYPT_AUTO_PGP))
+          msg->security |= APPLICATION_PGP;
+        else if ((WithCrypto & APPLICATION_SMIME) && option(OPT_CRYPT_AUTO_SMIME))
+          msg->security |= APPLICATION_SMIME;
       }
     }
 
-    /* opportunistic encrypt relys on SMIME or PGP already being selected */
-    if (option (OPTCRYPTOPPORTUNISTICENCRYPT))
+    /* opportunistic encrypt relies on SMIME or PGP already being selected */
+    if (option(OPT_CRYPT_OPPORTUNISTIC_ENCRYPT))
     {
-      /* If something has already enabled encryption, e.g. OPTCRYPTAUTOENCRYPT
-       * or OPTCRYPTREPLYENCRYPT, then don't enable opportunistic encrypt for
+      /* If something has already enabled encryption, e.g. OPT_CRYPT_AUTO_ENCRYPT
+       * or OPT_CRYPT_REPLY_ENCRYPT, then don't enable opportunistic encrypt for
        * the message.
        */
-      if (! (msg->security & ENCRYPT))
+      if (!(msg->security & ENCRYPT))
       {
         msg->security |= OPPENCRYPT;
         crypt_opportunistic_encrypt(msg);
@@ -1752,101 +1780,114 @@ ci_send_message (int flags,		/* send mode */
     }
 
     /* No permissible mechanisms found.  Don't sign or encrypt. */
-    if (!(msg->security & (APPLICATION_SMIME|APPLICATION_PGP)))
+    if (!(msg->security & (APPLICATION_SMIME | APPLICATION_PGP)))
       msg->security = 0;
   }
 
   /* specify a default fcc.  if we are in batchmode, only save a copy of
    * the message if the value of $copy is yes or ask-yes */
 
-  if (!fcc[0] && !(flags & (SENDPOSTPONEDFCC)) && (!(flags & SENDBATCH) || (quadoption (OPT_COPY) & 0x1)))
+  if (!fcc[0] && !(flags & (SENDPOSTPONEDFCC)) &&
+      (!(flags & SENDBATCH) || (quadoption(OPT_COPY) & 0x1)))
   {
     /* set the default FCC */
     if (!msg->env->from)
     {
-      msg->env->from = mutt_default_from ();
-      killfrom = 1; /* no need to check $use_from because if the user specified
-		       a from address it would have already been set by now */
+      msg->env->from = mutt_default_from();
+      killfrom = true; /* no need to check $use_from because if the user specified
+                       a from address it would have already been set by now */
     }
-    mutt_select_fcc (fcc, sizeof (fcc), msg);
+    mutt_select_fcc(fcc, sizeof(fcc), msg);
     if (killfrom)
     {
-      rfc822_free_address (&msg->env->from);
-      killfrom = 0;
+      rfc822_free_address(&msg->env->from);
+      killfrom = false;
     }
   }
 
-  
-  mutt_update_encoding (msg->content);
+  mutt_update_encoding(msg->content);
 
-  if (! (flags & (SENDMAILX | SENDBATCH)))
+  if (!(flags & (SENDMAILX | SENDBATCH)))
   {
-main_loop:
+  main_loop:
 
-    fcc_error = 0; /* reset value since we may have failed before */
-    mutt_pretty_mailbox (fcc, sizeof (fcc));
-    i = mutt_compose_menu (msg, fcc, sizeof (fcc), cur,
-                           (flags & SENDNOFREEHEADER ? MUTT_COMPOSE_NOFREEHEADER : 0));
+    fcc_error = false; /* reset value since we may have failed before */
+    mutt_pretty_mailbox(fcc, sizeof(fcc));
+    i = mutt_compose_menu(msg, fcc, sizeof(fcc), cur,
+                          (flags & SENDNOFREEHEADER ? MUTT_COMPOSE_NOFREEHEADER : 0));
     if (i == -1)
     {
-      /* abort */
+/* abort */
 #ifdef USE_NNTP
       if (flags & SENDNEWS)
-	mutt_message (_("Article not posted."));
+        mutt_message(_("Article not posted."));
       else
 #endif
-      mutt_message _("Mail not sent.");
+        mutt_message(_("Mail not sent."));
       goto cleanup;
     }
     else if (i == 1)
     {
       /* postpone the message until later. */
       if (msg->content->next)
-	msg->content = mutt_make_multipart (msg->content);
+        msg->content = mutt_make_multipart(msg->content);
 
-      if (WithCrypto && option (OPTPOSTPONEENCRYPT) && PostponeEncryptAs
-          && (msg->security & ENCRYPT))
+      if (WithCrypto && option(OPT_POSTPONE_ENCRYPT) && (msg->security & ENCRYPT))
       {
-        int is_signed = msg->security & SIGN;
-        if (is_signed)
-          msg->security &= ~SIGN;
+        char *encrypt_as = NULL;
 
-        pgpkeylist = safe_strdup (PostponeEncryptAs);
-        if (mutt_protect (msg, pgpkeylist) == -1)
+        if ((WithCrypto & APPLICATION_PGP) && (msg->security & APPLICATION_PGP))
+          encrypt_as = PgpSelfEncryptAs;
+        else if ((WithCrypto & APPLICATION_SMIME) && (msg->security & APPLICATION_SMIME))
+          encrypt_as = SmimeSelfEncryptAs;
+        if (!(encrypt_as && *encrypt_as))
+          encrypt_as = PostponeEncryptAs;
+
+        if (encrypt_as && *encrypt_as)
         {
+          int is_signed = msg->security & SIGN;
+          if (is_signed)
+            msg->security &= ~SIGN;
+
+          pgpkeylist = safe_strdup(encrypt_as);
+          if (mutt_protect(msg, pgpkeylist) == -1)
+          {
+            if (is_signed)
+              msg->security |= SIGN;
+            FREE(&pgpkeylist);
+            msg->content = mutt_remove_multipart(msg->content);
+            goto main_loop;
+          }
+
           if (is_signed)
             msg->security |= SIGN;
-          FREE (&pgpkeylist);
-          msg->content = mutt_remove_multipart (msg->content);
-          goto main_loop;
+          FREE(&pgpkeylist);
         }
-
-        if (is_signed)
-          msg->security |= SIGN;
-        FREE (&pgpkeylist);
       }
 
       /*
-       * make sure the message is written to the right part of a maildir 
+       * make sure the message is written to the right part of a maildir
        * postponed folder.
        */
-      msg->read = 0; msg->old = 0;
+      msg->read = false;
+      msg->old = false;
 
-      mutt_encode_descriptions (msg->content, 1);
-      mutt_prepare_envelope (msg->env, 0);
-      mutt_env_to_intl (msg->env, NULL, NULL);	/* Handle bad IDNAs the next time. */
+      mutt_encode_descriptions(msg->content, 1);
+      mutt_prepare_envelope(msg->env, 0);
+      mutt_env_to_intl(msg->env, NULL, NULL); /* Handle bad IDNAs the next time. */
 
-      if (!Postponed || mutt_write_fcc (NONULL (Postponed), msg,
-	                    (cur && (flags & SENDREPLY)) ?
-			             cur->env->message_id : NULL, 1, fcc, NULL) < 0)
+      if (!Postponed ||
+          mutt_write_fcc(NONULL(Postponed), msg,
+                         (cur && (flags & SENDREPLY)) ? cur->env->message_id : NULL,
+                         1, fcc, NULL) < 0)
       {
-	msg->content = mutt_remove_multipart (msg->content);
-	decode_descriptions (msg->content);
-	mutt_unprepare_envelope (msg->env);
-	goto main_loop;
+        msg->content = mutt_remove_multipart(msg->content);
+        decode_descriptions(msg->content);
+        mutt_unprepare_envelope(msg->env);
+        goto main_loop;
       }
-      mutt_update_num_postponed ();
-      mutt_message _("Message postponed.");
+      mutt_update_num_postponed();
+      mutt_message(_("Message postponed."));
       rv = 1;
       goto cleanup;
     }
@@ -1855,109 +1896,107 @@ main_loop:
 #ifdef USE_NNTP
   if (!(flags & SENDNEWS))
 #endif
-  if (!has_recips (msg->env->to) && !has_recips (msg->env->cc) &&
-      !has_recips (msg->env->bcc))
-  {
-    if (! (flags & SENDBATCH))
+    if (!has_recips(msg->env->to) && !has_recips(msg->env->cc) &&
+        !has_recips(msg->env->bcc))
     {
-      mutt_error _("No recipients are specified!");
-      goto main_loop;
+      if (!(flags & SENDBATCH))
+      {
+        mutt_error(_("No recipients are specified!"));
+        goto main_loop;
+      }
+      else
+      {
+        puts(_("No recipients were specified."));
+        goto cleanup;
+      }
     }
-    else
-    {
-      puts _("No recipients were specified.");
-      goto cleanup;
-    }
-  }
 
-  if (mutt_env_to_intl (msg->env, &tag, &err))
+  if (mutt_env_to_intl(msg->env, &tag, &err))
   {
-    mutt_error (_("Bad IDN in \"%s\": '%s'"), tag, err);
-    FREE (&err);
+    mutt_error(_("Bad IDN in \"%s\": '%s'"), tag, err);
+    FREE(&err);
     if (!(flags & SENDBATCH))
       goto main_loop;
-    else 
+    else
       goto cleanup;
   }
-  
-  if (!msg->env->subject && ! (flags & SENDBATCH) &&
-      (i = query_quadoption (OPT_SUBJECT, _("No subject, abort sending?"))) != MUTT_NO)
+
+  if (!msg->env->subject && !(flags & SENDBATCH) &&
+      (i = query_quadoption(OPT_SUBJECT, _("No subject, abort sending?"))) != MUTT_NO)
   {
     /* if the abort is automatic, print an error message */
-    if (quadoption (OPT_SUBJECT) == MUTT_YES)
-      mutt_error _("No subject specified.");
+    if (quadoption(OPT_SUBJECT) == MUTT_YES)
+      mutt_error(_("No subject specified."));
     goto main_loop;
   }
 #ifdef USE_NNTP
   if ((flags & SENDNEWS) && !msg->env->subject)
   {
-    mutt_error (_("No subject specified."));
+    mutt_error(_("No subject specified."));
     goto main_loop;
   }
 
   if ((flags & SENDNEWS) && !msg->env->newsgroups)
   {
-    mutt_error (_("No newsgroup specified."));
+    mutt_error(_("No newsgroup specified."));
     goto main_loop;
   }
 #endif
 
-  if (quadoption(OPT_ATTACH) != MUTT_NO &&
-         !msg->content->next &&
-         mutt_search_attach_keyword (msg->content->filename) &&
-         query_quadoption (OPT_ATTACH, _("No attachments, cancel sending?")) != MUTT_NO)
+  if (quadoption(OPT_ATTACH) != MUTT_NO && !msg->content->next &&
+      search_attach_keyword(msg->content->filename) &&
+      query_quadoption(OPT_ATTACH, _("No attachments, cancel sending?")) != MUTT_NO)
   {
     /* if the abort is automatic, print an error message */
-    if (quadoption (OPT_ATTACH) == MUTT_YES)
+    if (quadoption(OPT_ATTACH) == MUTT_YES)
     {
-      mutt_error (_("Message contains text matching \"$attach_keyword\". Not sending."));
+      mutt_error(_(
+          "Message contains text matching \"$attach_keyword\". Not sending."));
     }
     goto main_loop;
   }
 
-
   if (msg->content->next)
-    msg->content = mutt_make_multipart (msg->content);
+    msg->content = mutt_make_multipart(msg->content);
 
-  /* 
+  /*
    * Ok, we need to do it this way instead of handling all fcc stuff in
    * one place in order to avoid going to main_loop with encoded "env"
    * in case of error.  Ugh.
    */
 
-  mutt_encode_descriptions (msg->content, 1);
-  
+  mutt_encode_descriptions(msg->content, 1);
+
   /*
    * Make sure that clear_content and free_clear_content are
    * properly initialized -- we may visit this particular place in
    * the code multiple times, including after a failed call to
    * mutt_protect().
    */
-  
+
   clear_content = NULL;
-  free_clear_content = 0;
-  
+  free_clear_content = false;
+
   if (WithCrypto)
   {
     if (msg->security & (ENCRYPT | SIGN))
     {
       /* save the decrypted attachments */
       clear_content = msg->content;
-  
-      if ((crypt_get_keys (msg, &pgpkeylist, 0) == -1) ||
-          mutt_protect (msg, pgpkeylist) == -1)
+
+      if ((crypt_get_keys(msg, &pgpkeylist, 0) == -1) || mutt_protect(msg, pgpkeylist) == -1)
       {
-        msg->content = mutt_remove_multipart (msg->content);
-        
-	FREE (&pgpkeylist);
-        
-        decode_descriptions (msg->content);
+        msg->content = mutt_remove_multipart(msg->content);
+
+        FREE(&pgpkeylist);
+
+        decode_descriptions(msg->content);
         goto main_loop;
       }
-      mutt_encode_descriptions (msg->content, 0);
+      mutt_encode_descriptions(msg->content, 0);
     }
-  
-    /* 
+
+    /*
      * at this point, msg->content is one of the following three things:
      * - multipart/signed.  In this case, clear_content is a child.
      * - multipart/encrypted.  In this case, clear_content exists
@@ -1965,99 +2004,96 @@ main_loop:
      * - application/pgp.  In this case, clear_content exists independently.
      * - something else.  In this case, it's the same as clear_content.
      */
-  
+
     /* This is ugly -- lack of "reporting back" from mutt_protect(). */
-    
-    if (clear_content && (msg->content != clear_content)
-        && (msg->content->parts != clear_content))
-      free_clear_content = 1;
+
+    if (clear_content && (msg->content != clear_content) && (msg->content->parts != clear_content))
+      free_clear_content = true;
   }
 
-  if (!option (OPTNOCURSES) && !(flags & SENDMAILX))
-    mutt_message _("Sending message...");
+  if (!option(OPT_NO_CURSES) && !(flags & SENDMAILX))
+    mutt_message(_("Sending message..."));
 
-  mutt_prepare_envelope (msg->env, 1);
+  mutt_prepare_envelope(msg->env, 1);
 
   /* save a copy of the message, if necessary. */
 
-  mutt_expand_path (fcc, sizeof (fcc));
+  mutt_expand_path(fcc, sizeof(fcc));
 
-  
-  /* Don't save a copy when we are in batch-mode, and the FCC
+/* Don't save a copy when we are in batch-mode, and the FCC
    * folder is on an IMAP server: This would involve possibly lots
-   * of user interaction, which is not available in batch mode. 
-   * 
+   * of user interaction, which is not available in batch mode.
+   *
    * Note: A patch to fix the problems with the use of IMAP servers
-   * from non-curses mode is available from Brendan Cully.  However, 
+   * from non-curses mode is available from Brendan Cully.  However,
    * I'd like to think a bit more about this before including it.
    */
 
 #ifdef USE_IMAP
-  if ((flags & SENDBATCH) && fcc[0] && mx_is_imap (fcc))
+  if ((flags & SENDBATCH) && fcc[0] && mx_is_imap(fcc))
     fcc[0] = '\0';
 #endif
 
-  if (*fcc && mutt_strcmp ("/dev/null", fcc) != 0)
+  if (*fcc && (mutt_strcmp("/dev/null", fcc) != 0))
   {
-    BODY *tmpbody = msg->content;
-    BODY *save_sig = NULL;
-    BODY *save_parts = NULL;
+    struct Body *tmpbody = msg->content;
+    struct Body *save_sig = NULL;
+    struct Body *save_parts = NULL;
 
-    if (WithCrypto && (msg->security & (ENCRYPT | SIGN)) && option (OPTFCCCLEAR))
+    if (WithCrypto && (msg->security & (ENCRYPT | SIGN)) && option(OPT_FCC_CLEAR))
       msg->content = clear_content;
 
     /* check to see if the user wants copies of all attachments */
-    if (query_quadoption (OPT_FCCATTACH, _("Save attachments in Fcc?")) != MUTT_YES &&
-	msg->content->type == TYPEMULTIPART)
+    if (query_quadoption(OPT_FCC_ATTACH, _("Save attachments in Fcc?")) != MUTT_YES &&
+        msg->content->type == TYPEMULTIPART)
     {
-      if (WithCrypto
-          && (msg->security & (ENCRYPT | SIGN))
-          && (mutt_strcmp (msg->content->subtype, "encrypted") == 0 ||
-              mutt_strcmp (msg->content->subtype, "signed") == 0))
+      if (WithCrypto && (msg->security & (ENCRYPT | SIGN)) &&
+          ((mutt_strcmp(msg->content->subtype, "encrypted") == 0) ||
+           (mutt_strcmp(msg->content->subtype, "signed") == 0)))
       {
-	if (clear_content->type == TYPEMULTIPART)
-	{
-	  if(!(msg->security & ENCRYPT) && (msg->security & SIGN))
-	  {
-	    /* save initial signature and attachments */
-	    save_sig = msg->content->parts->next;
-	    save_parts = clear_content->parts->next;
-	  }
+        if (clear_content->type == TYPEMULTIPART)
+        {
+          if (!(msg->security & ENCRYPT) && (msg->security & SIGN))
+          {
+            /* save initial signature and attachments */
+            save_sig = msg->content->parts->next;
+            save_parts = clear_content->parts->next;
+          }
 
-	  /* this means writing only the main part */
-	  msg->content = clear_content->parts;
+          /* this means writing only the main part */
+          msg->content = clear_content->parts;
 
-	  if (mutt_protect (msg, pgpkeylist) == -1)
-	  {
-	    /* we can't do much about it at this point, so
-	     * fallback to saving the whole thing to fcc
-	     */
-	    msg->content = tmpbody;
-	    save_sig = NULL;
-	    goto full_fcc;
-	  }
+          if (mutt_protect(msg, pgpkeylist) == -1)
+          {
+            /* we can't do much about it at this point, so
+             * fallback to saving the whole thing to fcc
+             */
+            msg->content = tmpbody;
+            save_sig = NULL;
+            goto full_fcc;
+          }
 
-	  save_content = msg->content;
-	}
+          save_content = msg->content;
+        }
       }
       else
-	msg->content = msg->content->parts;
+        msg->content = msg->content->parts;
     }
 
-full_fcc:
+  full_fcc:
     if (msg->content)
     {
       /* update received time so that when storing to a mbox-style folder
        * the From_ line contains the current time instead of when the
        * message was first postponed.
        */
-      msg->received = time (NULL);
-      if (mutt_write_multiple_fcc (fcc, msg, NULL, 0, NULL, &finalpath) == -1)
+      msg->received = time(NULL);
+      if (mutt_write_multiple_fcc(fcc, msg, NULL, 0, NULL, &finalpath) == -1)
       {
-	/*
-	 * Error writing FCC, we should abort sending.
-	 */
-	fcc_error = 1;
+        /*
+         * Error writing FCC, we should abort sending.
+         */
+        fcc_error = true;
       }
     }
 
@@ -2068,10 +2104,10 @@ full_fcc:
       /* cleanup the second signature structures */
       if (save_content->parts)
       {
-	mutt_free_body (&save_content->parts->next);
-	save_content->parts = NULL;
+        mutt_free_body(&save_content->parts->next);
+        save_content->parts = NULL;
       }
-      mutt_free_body (&save_content);
+      mutt_free_body(&save_content);
 
       /* restore old signature and attachments */
       msg->content->parts->next = save_sig;
@@ -2080,107 +2116,99 @@ full_fcc:
     else if (WithCrypto && save_content)
     {
       /* destroy the new encrypted body. */
-      mutt_free_body (&save_content);
+      mutt_free_body(&save_content);
     }
-
   }
-
 
   /*
    * Don't attempt to send the message if the FCC failed.  Just pretend
    * the send failed as well so we give the user a chance to fix the
    * error.
    */
-  if (fcc_error || (i = send_message (msg)) < 0)
+  if (fcc_error || (i = send_message(msg)) < 0)
   {
     if (!(flags & SENDBATCH))
     {
       if (!WithCrypto)
         ;
-      else if ((msg->security & ENCRYPT) || 
-               ((msg->security & SIGN)
-                && msg->content->type == TYPEAPPLICATION))
+      else if ((msg->security & ENCRYPT) ||
+               ((msg->security & SIGN) && msg->content->type == TYPEAPPLICATION))
       {
-	mutt_free_body (&msg->content); /* destroy PGP data */
-	msg->content = clear_content;	/* restore clear text. */
+        mutt_free_body(&msg->content); /* destroy PGP data */
+        msg->content = clear_content;  /* restore clear text. */
       }
       else if ((msg->security & SIGN) && msg->content->type == TYPEMULTIPART)
       {
-	mutt_free_body (&msg->content->parts->next);	     /* destroy sig */
-	msg->content = mutt_remove_multipart (msg->content); 
+        mutt_free_body(&msg->content->parts->next); /* destroy sig */
+        msg->content = mutt_remove_multipart(msg->content);
       }
 
-      msg->content = mutt_remove_multipart (msg->content);
-      decode_descriptions (msg->content);
-      mutt_unprepare_envelope (msg->env);
+      msg->content = mutt_remove_multipart(msg->content);
+      decode_descriptions(msg->content);
+      mutt_unprepare_envelope(msg->env);
       FREE(&finalpath);
       goto main_loop;
     }
     else
     {
-      puts _("Could not send the message.");
+      puts(_("Could not send the message."));
       goto cleanup;
     }
   }
-  else if (!option (OPTNOCURSES) && ! (flags & SENDMAILX)) {
-    mutt_message (i != 0 ? _("Sending in background.") :
-#ifdef USE_NNTP
-		  (flags & SENDNEWS) ? _("Article posted.") : _("Mail sent."));
-#else
-		  _("Mail sent."));
-#endif
+  else if (!option(OPT_NO_CURSES) && !(flags & SENDMAILX))
+  {
+    mutt_message(i != 0 ? _("Sending in background.") :
+                          (flags & SENDNEWS) ? _("Article posted.") : /* USE_NNTP */
+                              _("Mail sent."));
 #ifdef USE_NOTMUCH
-    if (option(OPTNOTMUCHRECORD))
+    if (option(OPT_NOTMUCH_RECORD))
       nm_record_message(ctx, finalpath, cur);
 #endif
   }
 
   if (WithCrypto && (msg->security & ENCRYPT))
-    FREE (&pgpkeylist);
-  
+    FREE(&pgpkeylist);
+
   if (WithCrypto && free_clear_content)
-    mutt_free_body (&clear_content);
+    mutt_free_body(&clear_content);
 
   /* set 'replied' flag only if the user didn't change/remove
      In-Reply-To: and References: headers during edit */
   if (flags & SENDREPLY)
   {
     if (cur && ctx)
-      mutt_set_flag (ctx, cur, MUTT_REPLIED, is_reply (cur, msg));
+      mutt_set_flag(ctx, cur, MUTT_REPLIED, is_reply(cur, msg));
     else if (!(flags & SENDPOSTPONED) && ctx && ctx->tagged)
     {
       for (i = 0; i < ctx->vcount; i++)
-	if (ctx->hdrs[ctx->v2r[i]]->tagged)
-	  mutt_set_flag (ctx, ctx->hdrs[ctx->v2r[i]], MUTT_REPLIED,
-			 is_reply (ctx->hdrs[ctx->v2r[i]], msg));
+        if (ctx->hdrs[ctx->v2r[i]]->tagged)
+          mutt_set_flag(ctx, ctx->hdrs[ctx->v2r[i]], MUTT_REPLIED,
+                        is_reply(ctx->hdrs[ctx->v2r[i]], msg));
     }
   }
 
-
   rv = 0;
-  
+
 cleanup:
 
   if (flags & SENDPOSTPONED)
   {
     if (WithCrypto & APPLICATION_PGP)
     {
-      FREE (&PgpSignAs);
+      FREE(&PgpSignAs);
       PgpSignAs = pgp_signas;
     }
     if (WithCrypto & APPLICATION_SMIME)
     {
-      FREE (&SmimeDefaultKey);
+      FREE(&SmimeDefaultKey);
       SmimeDefaultKey = smime_default_key;
     }
   }
-   
-  safe_fclose (&tempfp);
-  if (! (flags & SENDNOFREEHEADER))
-    mutt_free_header (&msg);
+
+  safe_fclose(&tempfp);
+  if (!(flags & SENDNOFREEHEADER))
+    mutt_free_header(&msg);
 
   FREE(&finalpath);
   return rv;
 }
-
-/* vim: set sw=2: */

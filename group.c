@@ -1,89 +1,86 @@
-/*
+/**
+ * @file
+ * Handling for email address groups
+ *
+ * @authors
  * Copyright (C) 2006 Thomas Roessler <roessler@does-not-exist.org>
  * Copyright (C) 2009 Rocco Rutte <pdmef@gmx.net>
  *
- *     This program is free software; you can redistribute it and/or modify
- *     it under the terms of the GNU General Public License as published by
- *     the Free Software Foundation; either version 2 of the License, or
- *     (at your option) any later version.
+ * @copyright
+ * This program is free software: you can redistribute it and/or modify it under
+ * the terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 2 of the License, or (at your option) any later
+ * version.
  *
- *     This program is distributed in the hope that it will be useful,
- *     but WITHOUT ANY WARRANTY; without even the implied warranty of
- *     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *     GNU General Public License for more details.
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+ * FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+ * details.
  *
- *     You should have received a copy of the GNU General Public License
- *     along with this program; if not, write to the Free Software
- *     Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+ * You should have received a copy of the GNU General Public License along with
+ * this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#if HAVE_CONFIG_H
-# include "config.h"
-#endif
-
-#include "mutt.h"
-#include "mutt_curses.h"
-#include "mutt_regex.h"
-#include "mbyte.h"
-#include "charset.h"
-
-#include <ctype.h>
+#include "config.h"
 #include <stdlib.h>
-#include <unistd.h>
-#include <string.h>
-#include <sys/utsname.h>
-#include <errno.h>
-#include <sys/wait.h>
+#include "mutt.h"
+#include "group.h"
+#include "address.h"
+#include "globals.h"
+#include "lib/lib.h"
+#include "list.h"
+#include "protos.h"
+#include "rfc822.h"
 
-group_t *mutt_pattern_group (const char *k)
+struct Group *mutt_pattern_group(const char *k)
 {
-  group_t *p;
+  struct Group *p = NULL;
 
   if (!k)
     return 0;
 
-  if (!(p = hash_find (Groups, k)))
+  if (!(p = hash_find(Groups, k)))
   {
-    dprint (2, (debugfile, "mutt_pattern_group: Creating group %s.\n", k));
-    p = safe_calloc (1, sizeof (group_t));
-    p->name = safe_strdup (k);
-    hash_insert (Groups, p->name, p, 0);
+    mutt_debug(2, "mutt_pattern_group: Creating group %s.\n", k);
+    p = safe_calloc(1, sizeof(struct Group));
+    p->name = safe_strdup(k);
+    hash_insert(Groups, p->name, p);
   }
 
   return p;
 }
 
-static void mutt_group_remove (group_t *g)
+static void group_remove(struct Group *g)
 {
   if (!g)
     return;
-  hash_delete (Groups, g->name, g, NULL);
-  rfc822_free_address (&g->as);
-  mutt_free_rx_list (&g->rs);
+  hash_delete(Groups, g->name, g, NULL);
+  rfc822_free_address(&g->as);
+  mutt_free_rx_list(&g->rs);
   FREE(&g->name);
   FREE(&g);
 }
 
-int mutt_group_context_clear (group_context_t **ctx)
+int mutt_group_context_clear(struct GroupContext **ctx)
 {
-  group_context_t *t;
-  for ( ; ctx && *ctx; (*ctx) = t)
+  struct GroupContext *t = NULL;
+  for (; ctx && *ctx; (*ctx) = t)
   {
-    mutt_group_remove ((*ctx)->g);
+    group_remove((*ctx)->g);
     t = (*ctx)->next;
-    FREE(ctx);				/* __FREE_CHECKED__ */
+    FREE(ctx);
   }
   return 0;
 }
 
-static int empty_group (group_t *g)
+static int empty_group(struct Group *g)
 {
   if (!g)
     return -1;
   return !g->as && !g->rs;
 }
 
-void mutt_group_context_add (group_context_t **ctx, group_t *group)
+void mutt_group_context_add(struct GroupContext **ctx, struct Group *group)
 {
   for (; *ctx; ctx = &((*ctx)->next))
   {
@@ -91,23 +88,23 @@ void mutt_group_context_add (group_context_t **ctx, group_t *group)
       return;
   }
 
-  *ctx = safe_calloc (1, sizeof (group_context_t));
+  *ctx = safe_calloc(1, sizeof(struct GroupContext));
   (*ctx)->g = group;
 }
 
-void mutt_group_context_destroy (group_context_t **ctx)
+void mutt_group_context_destroy(struct GroupContext **ctx)
 {
-  group_context_t *p;
+  struct GroupContext *p = NULL;
   for (; *ctx; *ctx = p)
   {
     p = (*ctx)->next;
-    FREE (ctx);		/* __FREE_CHECKED__ */
+    FREE(ctx);
   }
 }
 
-void mutt_group_add_adrlist (group_t *g, ADDRESS *a)
+static void group_add_adrlist(struct Group *g, struct Address *a)
 {
-  ADDRESS **p, *q;
+  struct Address **p = NULL, *q = NULL;
 
   if (!g)
     return;
@@ -117,14 +114,14 @@ void mutt_group_add_adrlist (group_t *g, ADDRESS *a)
   for (p = &g->as; *p; p = &((*p)->next))
     ;
 
-  q = rfc822_cpy_adr (a, 0);
-  q = mutt_remove_xrefs (g->as, q);
+  q = rfc822_cpy_adr(a, 0);
+  q = mutt_remove_xrefs(g->as, q);
   *p = q;
 }
 
-static int mutt_group_remove_adrlist (group_t *g, ADDRESS *a)
+static int group_remove_adrlist(struct Group *g, struct Address *a)
 {
-  ADDRESS *p;
+  struct Address *p = NULL;
 
   if (!g)
     return -1;
@@ -132,77 +129,77 @@ static int mutt_group_remove_adrlist (group_t *g, ADDRESS *a)
     return -1;
 
   for (p = a; p; p = p->next)
-    rfc822_remove_from_adrlist (&g->as, p->mailbox);
+    rfc822_remove_from_adrlist(&g->as, p->mailbox);
 
   return 0;
 }
 
-static int mutt_group_add_rx (group_t *g, const char *s, int flags, BUFFER *err)
+static int group_add_rx(struct Group *g, const char *s, int flags, struct Buffer *err)
 {
-  return mutt_add_to_rx_list (&g->rs, s, flags, err);
+  return mutt_add_to_rx_list(&g->rs, s, flags, err);
 }
 
-static int mutt_group_remove_rx (group_t *g, const char *s)
+static int group_remove_rx(struct Group *g, const char *s)
 {
-  return mutt_remove_from_rx_list (&g->rs, s);
+  return mutt_remove_from_rx_list(&g->rs, s);
 }
 
-void mutt_group_context_add_adrlist (group_context_t *ctx, ADDRESS *a)
+void mutt_group_context_add_adrlist(struct GroupContext *ctx, struct Address *a)
 {
   for (; ctx; ctx = ctx->next)
-    mutt_group_add_adrlist (ctx->g, a);
+    group_add_adrlist(ctx->g, a);
 }
 
-int mutt_group_context_remove_adrlist (group_context_t *ctx, ADDRESS * a)
+int mutt_group_context_remove_adrlist(struct GroupContext *ctx, struct Address *a)
 {
   int rv = 0;
 
   for (; (!rv) && ctx; ctx = ctx->next)
   {
-    rv = mutt_group_remove_adrlist (ctx->g, a);
-    if (empty_group (ctx->g))
-      mutt_group_remove (ctx->g);
+    rv = group_remove_adrlist(ctx->g, a);
+    if (empty_group(ctx->g))
+      group_remove(ctx->g);
   }
 
   return rv;
 }
 
-int mutt_group_context_add_rx (group_context_t *ctx, const char *s, int flags, BUFFER *err)
+int mutt_group_context_add_rx(struct GroupContext *ctx, const char *s,
+                              int flags, struct Buffer *err)
 {
   int rv = 0;
 
   for (; (!rv) && ctx; ctx = ctx->next)
-    rv = mutt_group_add_rx (ctx->g, s, flags, err);
+    rv = group_add_rx(ctx->g, s, flags, err);
 
   return rv;
 }
 
-int mutt_group_context_remove_rx (group_context_t *ctx, const char *s)
+int mutt_group_context_remove_rx(struct GroupContext *ctx, const char *s)
 {
   int rv = 0;
 
   for (; (!rv) && ctx; ctx = ctx->next)
   {
-    rv = mutt_group_remove_rx (ctx->g, s);
-    if (empty_group (ctx->g))
-      mutt_group_remove (ctx->g);
+    rv = group_remove_rx(ctx->g, s);
+    if (empty_group(ctx->g))
+      group_remove(ctx->g);
   }
 
   return rv;
 }
 
-int mutt_group_match (group_t *g, const char *s)
+bool mutt_group_match(struct Group *g, const char *s)
 {
-  ADDRESS *ap;
+  struct Address *ap = NULL;
 
   if (s && g)
   {
-    if (mutt_match_rx_list (s, g->rs))
-      return 1;
+    if (mutt_match_rx_list(s, g->rs))
+      return true;
     for (ap = g->as; ap; ap = ap->next)
-      if (ap->mailbox && !mutt_strcasecmp (s, ap->mailbox))
-	return 1;
+      if (ap->mailbox && (mutt_strcasecmp(s, ap->mailbox) == 0))
+        return true;
   }
-  return 0;
+  return false;
 }
-

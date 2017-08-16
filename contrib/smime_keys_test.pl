@@ -42,8 +42,8 @@ close OUT;
 open OUT, '>demoCA/index.txt' or die;
 close OUT;
 
-# make the CA 
-run 'openssl req -new -x509 -keyout demoCA/private/cakey.pem -out demoCA/cacert.pem -days 7300 -nodes', 
+# make the CA
+run 'openssl req -new -x509 -keyout demoCA/private/cakey.pem -out demoCA/cacert.pem -days 7300 -nodes',
     "\n\nx\n\nx\nx\n\n";
 
 # trust it
@@ -60,6 +60,7 @@ run 'openssl pkcs12 -export -inkey user.key -in newcert.pem -out cert.p12 -CAfil
 unlink 'newcert.pem' or die;
 unlink 'demoCA/cacert.pem' or die;
 unlink 'demoCA/index.txt' or die;
+unlink 'demoCA/index.txt.attr' or die;
 unlink 'demoCA/index.txt.old' or die;
 unlink 'demoCA/serial' or die;
 unlink 'demoCA/serial.old' or die;
@@ -80,7 +81,7 @@ run 'smime_keys list > list';
 
 open IN, 'list' or die;
 <IN> eq "\n" or die;
-<IN> =~ /^(.*)\: Issued for\: user\@smime\.mutt \"old_label\" \(Unverified\)\n/ or die;
+<IN> =~ /^(.*)\: Issued for\: user\@smime\.mutt \"old_label\" \(Trusted\)\n/ or die;
 close IN;
 
 my $keyid = $1;
@@ -93,16 +94,16 @@ run 'smime_keys list > list';
 
 open IN, 'list' or die;
 <IN> eq "\n" or die;
-<IN> =~ /^$keyid\: Issued for\: user\@smime\.mutt \"new_label\" \(Unverified\)\n/ or die;
+<IN> =~ /^$keyid\: Issued for\: user\@smime\.mutt \"new_label\" \(Trusted\)\n/ or die;
 close IN;
 
 unlink 'list' or die;
 
 # try signing something
-run "openssl smime -sign -signer certificates/$keyid -inkey user.key -in /etc/passwd -certfile certificates/37adefc3.0  > signed";
+run "openssl smime -sign -signer certificates/$keyid -inkey user.key -in /etc/passwd -certfile ca-bundle.crt > signed";
 unlink 'user.key' or die;
 
-# verify it 
+# verify it
 run 'openssl smime -verify -out /dev/null -in signed -CAfile ca-bundle.crt';
 unlink 'signed' or die;
 
@@ -122,7 +123,7 @@ rmdir  $tmpdir or die;
 sub run ($;$) {
     my $cmd = shift or die;
     my $input = shift;
-    
+
     print "\n\nRunning [$cmd]\n";
 
     my $exp = Expect->spawn ($cmd);

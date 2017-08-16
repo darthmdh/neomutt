@@ -1,52 +1,61 @@
-/*
+/**
+ * @file
+ * GUI miscellaneous curses (window drawing) routines
+ *
+ * @authors
  * Copyright (C) 1996-2002,2010,2012-2013 Michael R. Elkins <me@mutt.org>
  * Copyright (C) 2004 g10 Code GmbH
- * 
- *     This program is free software; you can redistribute it and/or modify
- *     it under the terms of the GNU General Public License as published by
- *     the Free Software Foundation; either version 2 of the License, or
- *     (at your option) any later version.
- * 
- *     This program is distributed in the hope that it will be useful,
- *     but WITHOUT ANY WARRANTY; without even the implied warranty of
- *     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *     GNU General Public License for more details.
- * 
- *     You should have received a copy of the GNU General Public License
- *     along with this program; if not, write to the Free Software
- *     Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
- */ 
+ *
+ * @copyright
+ * This program is free software: you can redistribute it and/or modify it under
+ * the terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 2 of the License, or (at your option) any later
+ * version.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+ * FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+ * details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
-#if HAVE_CONFIG_H
-# include "config.h"
-#endif
-
-#include "mutt.h"
-#include "mutt_menu.h"
-#include "mutt_curses.h"
-#include "pager.h"
-#include "mbyte.h"
-
-#include <termios.h>
-#include <sys/types.h>
-#include <fcntl.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <string.h>
-#include <errno.h>
+#include "config.h"
+#include <stddef.h>
 #include <ctype.h>
-#ifdef HAVE_SYS_TIME_H
-# include <sys/time.h>
-#endif
-#include <time.h>
-
-#ifdef HAVE_LANGINFO_YESEXPR
+#include <errno.h>
+#include <fcntl.h>
 #include <langinfo.h>
+#ifdef ENABLE_NLS
+#include <libintl.h>
 #endif
+#include <limits.h>
+#include <regex.h>
+#include <stdarg.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/time.h>
+#include <termios.h>
+#include <unistd.h>
+#include <wchar.h>
+#include "mutt.h"
+#include "enter_state.h"
+#include "globals.h"
+#include "keymap_defs.h"
+#include "lib/lib.h"
+#include "mbyte.h"
+#include "mutt_curses.h"
+#include "mutt_menu.h"
+#include "mutt_regex.h"
+#include "options.h"
+#include "pager.h"
+#include "protos.h"
 #ifdef HAVE_ISWBLANK
 #include <wctype.h>
 #endif
-
 #ifdef USE_NOTMUCH
 #include "mutt_notmuch.h"
 #endif
@@ -57,78 +66,84 @@
  */
 
 /* These are used for macros and exec/push commands.
- * They can be temporarily ignored by setting OPTIGNOREMACROEVENTS
+ * They can be temporarily ignored by setting OPT_IGNORE_MACRO_EVENTS
  */
 static size_t MacroBufferCount = 0;
 static size_t MacroBufferLen = 0;
-static event_t *MacroEvents;
+static struct Event *MacroEvents;
 
 /* These are used in all other "normal" situations, and are not
- * ignored when setting OPTIGNOREMACROEVENTS
+ * ignored when setting OPT_IGNORE_MACRO_EVENTS
  */
 static size_t UngetCount = 0;
 static size_t UngetLen = 0;
-static event_t *UngetKeyEvents;
+static struct Event *UngetKeyEvents;
 
-mutt_window_t *MuttHelpWindow = NULL;
-mutt_window_t *MuttIndexWindow = NULL;
-mutt_window_t *MuttStatusWindow = NULL;
-mutt_window_t *MuttMessageWindow = NULL;
+struct MuttWindow *MuttHelpWindow = NULL;
+struct MuttWindow *MuttIndexWindow = NULL;
+struct MuttWindow *MuttStatusWindow = NULL;
+struct MuttWindow *MuttMessageWindow = NULL;
 #ifdef USE_SIDEBAR
-mutt_window_t *MuttSidebarWindow = NULL;
+struct MuttWindow *MuttSidebarWindow = NULL;
 #endif
 
-void mutt_refresh (void)
+static void reflow_message_window_rows(int mw_rows);
+
+void mutt_refresh(void)
 {
   /* don't refresh when we are waiting for a child. */
-  if (option (OPTKEEPQUIET))
+  if (option(OPT_KEEP_QUIET))
     return;
 
   /* don't refresh in the middle of macros unless necessary */
-  if (UngetCount && !option (OPTFORCEREFRESH))
+  if (MacroBufferCount && !option(OPT_FORCE_REFRESH) && !option(OPT_IGNORE_MACRO_EVENTS))
     return;
 
   /* else */
-  refresh ();
+  refresh();
 }
 
-/* Make sure that the next refresh does a full refresh.  This could be
-   optimized by not doing it at all if DISPLAY is set as this might
-   indicate that a GUI based pinentry was used.  Having an option to
-   customize this is of course the Mutt way.  */
-void mutt_need_hard_redraw (void)
+/**
+ * mutt_need_hard_redraw - Force a hard refresh
+ *
+ * Make sure that the next refresh does a full refresh.  This could be
+ * optimized by not doing it at all if DISPLAY is set as this might indicate
+ * that a GUI based pinentry was used.  Having an option to customize this is
+ * of course the Mutt way.
+ */
+void mutt_need_hard_redraw(void)
 {
-  keypad (stdscr, true);
-  clearok (stdscr, true);
-  set_option (OPTNEEDREDRAW);
+  keypad(stdscr, true);
+  clearok(stdscr, true);
+  mutt_set_current_menu_redraw_full();
 }
 
-event_t mutt_getch (void)
+struct Event mutt_getch(void)
 {
   int ch;
-  event_t err = {-1, OP_NULL }, ret;
-  event_t timeout = {-2, OP_NULL};
+  struct Event err = { -1, OP_NULL }, ret;
+  struct Event timeout = { -2, OP_NULL };
 
   if (UngetCount)
-    return (UngetKeyEvents[--UngetCount]);
+    return UngetKeyEvents[--UngetCount];
 
-  if (!option(OPTIGNOREMACROEVENTS) && MacroBufferCount)
-    return (MacroEvents[--MacroBufferCount]);
+  if (!option(OPT_IGNORE_MACRO_EVENTS) && MacroBufferCount)
+    return MacroEvents[--MacroBufferCount];
 
   SigInt = 0;
 
-  mutt_allow_interrupt (1);
+  mutt_allow_interrupt(1);
 #ifdef KEY_RESIZE
   /* ncurses 4.2 sends this when the screen is resized */
   ch = KEY_RESIZE;
   while (ch == KEY_RESIZE)
 #endif /* KEY_RESIZE */
-    ch = getch ();
-  mutt_allow_interrupt (0);
+    ch = getch();
+  mutt_allow_interrupt(0);
 
   if (SigInt)
   {
-    mutt_query_exit ();
+    mutt_query_exit();
     return err;
   }
 
@@ -136,19 +151,19 @@ event_t mutt_getch (void)
    * has been lost */
   if (ch == ERR)
   {
-    if (!isatty (0))
+    if (!isatty(0))
     {
-      endwin ();
-      exit (1);
+      endwin();
+      exit(1);
     }
     return timeout;
   }
 
-  if ((ch & 0x80) && option (OPTMETAKEY))
+  if ((ch & 0x80) && option(OPT_METAKEY))
   {
     /* send ALT-x as ESC-x */
     ch &= ~0x80;
-    mutt_unget_event (ch, 0);
+    mutt_unget_event(ch, 0);
     ret.ch = '\033';
     ret.op = 0;
     return ret;
@@ -156,81 +171,91 @@ event_t mutt_getch (void)
 
   ret.ch = ch;
   ret.op = 0;
-  return (ch == ctrl ('G') ? err : ret);
+  return (ch == ctrl('G') ? err : ret);
 }
 
-int _mutt_get_field (const char *field, char *buf, size_t buflen, int complete, int multiple, char ***files, int *numfiles)
+int _mutt_get_field(const char *field, char *buf, size_t buflen, int complete,
+                    int multiple, char ***files, int *numfiles)
 {
   int ret;
   int x;
 
-  ENTER_STATE *es = mutt_new_enter_state();
-  
+  struct EnterState *es = mutt_new_enter_state();
+
   do
   {
-    mutt_window_clearline (MuttMessageWindow, 0);
-    SETCOLOR (MT_COLOR_PROMPT);
-    addstr ((char *)field); /* cast to get around bad prototypes */
+#if defined(USE_SLANG_CURSES) || defined(HAVE_RESIZETERM)
+    if (SigWinch)
+    {
+      SigWinch = 0;
+      mutt_resize_screen();
+      clearok(stdscr, TRUE);
+      mutt_current_menu_redraw();
+    }
+#endif
+    mutt_window_clearline(MuttMessageWindow, 0);
+    SETCOLOR(MT_COLOR_PROMPT);
+    addstr((char *) field); /* cast to get around bad prototypes */
     NORMAL_COLOR;
-    mutt_refresh ();
-    mutt_window_getyx (MuttMessageWindow, NULL, &x);
-    ret = _mutt_enter_string (buf, buflen, x, complete, multiple, files, numfiles, es);
-  }
-  while (ret == 1);
-  mutt_window_clearline (MuttMessageWindow, 0);
-  mutt_free_enter_state (&es);
-  
-  return (ret);
+    mutt_refresh();
+    mutt_window_getyx(MuttMessageWindow, NULL, &x);
+    ret = _mutt_enter_string(buf, buflen, x, complete, multiple, files, numfiles, es);
+  } while (ret == 1);
+  mutt_window_clearline(MuttMessageWindow, 0);
+  mutt_free_enter_state(&es);
+
+  return ret;
 }
 
-int mutt_get_field_unbuffered (char *msg, char *buf, size_t buflen, int flags)
+int mutt_get_field_unbuffered(char *msg, char *buf, size_t buflen, int flags)
 {
   int rc;
 
-  set_option (OPTIGNOREMACROEVENTS);
-  rc = mutt_get_field (msg, buf, buflen, flags);
-  unset_option (OPTIGNOREMACROEVENTS);
+  set_option(OPT_IGNORE_MACRO_EVENTS);
+  rc = mutt_get_field(msg, buf, buflen, flags);
+  unset_option(OPT_IGNORE_MACRO_EVENTS);
 
-  return (rc);
+  return rc;
 }
 
-void mutt_clear_error (void)
+void mutt_clear_error(void)
 {
-  Errorbuf[0] = 0;
-  if (!option(OPTNOCURSES))
-    mutt_window_clearline (MuttMessageWindow, 0);
+  ErrorBuf[0] = 0;
+  if (!option(OPT_NO_CURSES))
+    mutt_window_clearline(MuttMessageWindow, 0);
 }
 
-void mutt_edit_file (const char *editor, const char *data)
+void mutt_edit_file(const char *editor, const char *data)
 {
   char cmd[LONG_STRING];
-  
-  mutt_endwin (NULL);
-  mutt_expand_file_fmt (cmd, sizeof (cmd), editor, data);
-  if (mutt_system (cmd))
+
+  mutt_endwin(NULL);
+  mutt_expand_file_fmt(cmd, sizeof(cmd), editor, data);
+  if (mutt_system(cmd))
   {
-    mutt_error (_("Error running \"%s\"!"), cmd);
-    mutt_sleep (2);
+    mutt_error(_("Error running \"%s\"!"), cmd);
+    mutt_sleep(2);
   }
-#if defined (USE_SLANG_CURSES) || defined (HAVE_RESIZETERM)
+#if defined(USE_SLANG_CURSES) || defined(HAVE_RESIZETERM)
   /* the terminal may have been resized while the editor owned it */
-  mutt_resize_screen ();
+  mutt_resize_screen();
 #endif
-  keypad (stdscr, true);
-  clearok (stdscr, true);
+  keypad(stdscr, true);
+  clearok(stdscr, true);
 }
 
-int mutt_yesorno (const char *msg, int def)
+int mutt_yesorno(const char *msg, int def)
 {
-  event_t ch;
+  struct Event ch;
   char *yes = _("yes");
   char *no = _("no");
-  char *answer_string;
-  size_t answer_string_len;
-  size_t msglen;
+  char *answer_string = NULL;
+  int answer_string_wid, msg_wid;
+  size_t trunc_msg_len;
+  bool redraw = true;
+  int prompt_lines = 1;
 
-#ifdef HAVE_LANGINFO_YESEXPR
-  char *expr;
+  char *expr = NULL;
   regex_t reyes;
   regex_t reno;
   int reyes_ok;
@@ -238,14 +263,11 @@ int mutt_yesorno (const char *msg, int def)
   char answer[2];
 
   answer[1] = 0;
-  
-  reyes_ok = (expr = nl_langinfo (YESEXPR)) && expr[0] == '^' &&
-	     !REGCOMP (&reyes, expr, REG_NOSUB);
-  reno_ok = (expr = nl_langinfo (NOEXPR)) && expr[0] == '^' &&
-            !REGCOMP (&reno, expr, REG_NOSUB);
-#endif
 
-  mutt_window_clearline (MuttMessageWindow, 0);
+  reyes_ok = (expr = nl_langinfo(YESEXPR)) && expr[0] == '^' &&
+             !REGCOMP(&reyes, expr, REG_NOSUB);
+  reno_ok = (expr = nl_langinfo(NOEXPR)) && expr[0] == '^' &&
+            !REGCOMP(&reno, expr, REG_NOSUB);
 
   /*
    * In order to prevent the default answer to the question to wrapped
@@ -253,21 +275,58 @@ int mutt_yesorno (const char *msg, int def)
    * ensure there is enough room for the answer and truncate the question
    * to fit.
    */
-  safe_asprintf (&answer_string, " ([%s]/%s): ", def == MUTT_YES ? yes : no, def == MUTT_YES ? no : yes);
-  answer_string_len = mutt_strwidth (answer_string);
-  /* maxlen here is sort of arbitrary, so pick a reasonable upper bound */
-  msglen = mutt_wstr_trunc (msg, 4*MuttMessageWindow->cols, MuttMessageWindow->cols - answer_string_len, NULL);
-  SETCOLOR (MT_COLOR_PROMPT);
-  addnstr (msg, msglen);
-  addstr (answer_string);
-  NORMAL_COLOR;
-  FREE (&answer_string);
+  safe_asprintf(&answer_string, " ([%s]/%s): ", def == MUTT_YES ? yes : no,
+                def == MUTT_YES ? no : yes);
+  answer_string_wid = mutt_strwidth(answer_string);
+  msg_wid = mutt_strwidth(msg);
 
-  FOREVER
+  while (true)
   {
-    mutt_refresh ();
-    ch = mutt_getch ();
-    if (CI_is_return (ch.ch))
+    if (redraw || SigWinch)
+    {
+      redraw = false;
+#if defined(USE_SLANG_CURSES) || defined(HAVE_RESIZETERM)
+      if (SigWinch)
+      {
+        SigWinch = 0;
+        mutt_resize_screen();
+        clearok(stdscr, TRUE);
+        mutt_current_menu_redraw();
+      }
+#endif
+      if (MuttMessageWindow->cols)
+      {
+        prompt_lines = (msg_wid + answer_string_wid + MuttMessageWindow->cols - 1) /
+                       MuttMessageWindow->cols;
+        prompt_lines = MAX(1, MIN(3, prompt_lines));
+      }
+      if (prompt_lines != MuttMessageWindow->rows)
+      {
+        reflow_message_window_rows(prompt_lines);
+        mutt_current_menu_redraw();
+      }
+
+      /* maxlen here is sort of arbitrary, so pick a reasonable upper bound */
+      trunc_msg_len = mutt_wstr_trunc(
+          msg, 4 * prompt_lines * MuttMessageWindow->cols,
+          prompt_lines * MuttMessageWindow->cols - answer_string_wid, NULL);
+
+      mutt_window_move(MuttMessageWindow, 0, 0);
+      SETCOLOR(MT_COLOR_PROMPT);
+      addnstr(msg, trunc_msg_len);
+      addstr(answer_string);
+      NORMAL_COLOR;
+      mutt_window_clrtoeol(MuttMessageWindow);
+    }
+
+    mutt_refresh();
+    /* SigWinch is not processed unless timeout is set */
+    timeout(30 * 1000);
+    ch = mutt_getch();
+    timeout(-1);
+    if (ch.ch == -2)
+      continue;
+    if (CI_is_return(ch.ch))
       break;
     if (ch.ch < 0)
     {
@@ -275,24 +334,13 @@ int mutt_yesorno (const char *msg, int def)
       break;
     }
 
-#ifdef HAVE_LANGINFO_YESEXPR
     answer[0] = ch.ch;
-    if (reyes_ok ? 
-	(regexec (& reyes, answer, 0, 0, 0) == 0) :
-#else
-    if (
-#endif
-	(tolower (ch.ch) == 'y'))
+    if (reyes_ok ? (regexec(&reyes, answer, 0, 0, 0) == 0) : (tolower(ch.ch) == 'y'))
     {
       def = MUTT_YES;
       break;
     }
-    else if (
-#ifdef HAVE_LANGINFO_YESEXPR
-	     reno_ok ?
-	     (regexec (& reno, answer, 0, 0, 0) == 0) :
-#endif
-	     (tolower (ch.ch) == 'n'))
+    else if (reno_ok ? (regexec(&reno, answer, 0, 0, 0) == 0) : (tolower(ch.ch) == 'n'))
     {
       def = MUTT_NO;
       break;
@@ -303,17 +351,25 @@ int mutt_yesorno (const char *msg, int def)
     }
   }
 
-#ifdef HAVE_LANGINFO_YESEXPR    
+  FREE(&answer_string);
+
   if (reyes_ok)
-    regfree (& reyes);
+    regfree(&reyes);
   if (reno_ok)
-    regfree (& reno);
-#endif
+    regfree(&reno);
+
+  if (MuttMessageWindow->rows != 1)
+  {
+    reflow_message_window_rows(1);
+    mutt_current_menu_redraw();
+  }
+  else
+    mutt_window_clearline(MuttMessageWindow, 0);
 
   if (def != MUTT_ABORT)
   {
-    addstr ((char *) (def == MUTT_YES ? yes : no));
-    mutt_refresh ();
+    addstr((char *) (def == MUTT_YES ? yes : no));
+    mutt_refresh();
   }
   else
   {
@@ -321,138 +377,139 @@ int mutt_yesorno (const char *msg, int def)
      * mutt_message() so it isn't displayed when the screen is refreshed. */
     mutt_clear_error();
   }
-  return (def);
+  return def;
 }
 
-/* this function is called when the user presses the abort key */
-void mutt_query_exit (void)
+/**
+ * mutt_query_exit - Ask the user if they want to leave Mutt
+ *
+ * This function is called when the user presses the abort key.
+ */
+void mutt_query_exit(void)
 {
-  mutt_flushinp ();
-  curs_set (1);
+  mutt_flushinp();
+  curs_set(1);
   if (Timeout)
-    timeout (-1); /* restore blocking operation */
-  if (mutt_yesorno (_("Exit Mutt?"), MUTT_YES) == MUTT_YES)
+    timeout(-1); /* restore blocking operation */
+  if (mutt_yesorno(_("Exit Mutt?"), MUTT_YES) == MUTT_YES)
   {
-    endwin ();
-    exit (1);
+    endwin();
+    exit(1);
   }
   mutt_clear_error();
-  mutt_curs_set (-1);
+  mutt_curs_set(-1);
   SigInt = 0;
 }
 
-static void curses_message (int error, const char *fmt, va_list ap)
+static void curses_message(int error, const char *fmt, va_list ap)
 {
   char scratch[LONG_STRING];
 
-  vsnprintf (scratch, sizeof (scratch), fmt, ap);
+  vsnprintf(scratch, sizeof(scratch), fmt, ap);
 
-  dprint (1, (debugfile, "%s\n", scratch));
-  mutt_format_string (Errorbuf, sizeof (Errorbuf),
-		      0, MuttMessageWindow->cols, FMT_LEFT, 0, scratch, sizeof (scratch), 0);
+  mutt_debug(1, "%s\n", scratch);
+  mutt_simple_format(ErrorBuf, sizeof(ErrorBuf), 0, MuttMessageWindow->cols,
+                     FMT_LEFT, 0, scratch, sizeof(scratch), 0);
 
-  if (!option (OPTKEEPQUIET))
+  if (!option(OPT_KEEP_QUIET))
   {
     if (error)
-      BEEP ();
-    SETCOLOR (error ? MT_COLOR_ERROR : MT_COLOR_MESSAGE);
-    mutt_window_mvaddstr (MuttMessageWindow, 0, 0, Errorbuf);
+      BEEP();
+    SETCOLOR(error ? MT_COLOR_ERROR : MT_COLOR_MESSAGE);
+    mutt_window_mvaddstr(MuttMessageWindow, 0, 0, ErrorBuf);
     NORMAL_COLOR;
-    mutt_window_clrtoeol (MuttMessageWindow);
-    mutt_refresh ();
+    mutt_window_clrtoeol(MuttMessageWindow);
+    mutt_refresh();
   }
 
   if (error)
-    set_option (OPTMSGERR);
+    set_option(OPT_MSG_ERR);
   else
-    unset_option (OPTMSGERR);
+    unset_option(OPT_MSG_ERR);
 }
 
-void mutt_curses_error (const char *fmt, ...)
+void mutt_curses_error(const char *fmt, ...)
 {
   va_list ap;
 
-  va_start (ap, fmt);
-  curses_message (1, fmt, ap);
-  va_end (ap);
+  va_start(ap, fmt);
+  curses_message(1, fmt, ap);
+  va_end(ap);
 }
 
-void mutt_curses_message (const char *fmt, ...)
+void mutt_curses_message(const char *fmt, ...)
 {
   va_list ap;
 
-  va_start (ap, fmt);
-  curses_message (0, fmt, ap);
-  va_end (ap);
+  va_start(ap, fmt);
+  curses_message(0, fmt, ap);
+  va_end(ap);
 }
 
-void mutt_progress_init (progress_t* progress, const char *msg,
-			 unsigned short flags, unsigned short inc,
-			 long size)
+void mutt_progress_init(struct Progress *progress, const char *msg,
+                        unsigned short flags, unsigned short inc, long size)
 {
   struct timeval tv = { 0, 0 };
 
   if (!progress)
     return;
-  if (option(OPTNOCURSES))
+  if (option(OPT_NO_CURSES))
     return;
 
-  memset (progress, 0, sizeof (progress_t));
+  memset(progress, 0, sizeof(struct Progress));
   progress->inc = inc;
   progress->flags = flags;
   progress->msg = msg;
   progress->size = size;
-  if (progress->size) {
+  if (progress->size)
+  {
     if (progress->flags & MUTT_PROGRESS_SIZE)
-      mutt_pretty_size (progress->sizestr, sizeof (progress->sizestr),
-			progress->size);
+      mutt_pretty_size(progress->sizestr, sizeof(progress->sizestr), progress->size);
     else
-      snprintf (progress->sizestr, sizeof (progress->sizestr), "%ld",
-		progress->size);
+      snprintf(progress->sizestr, sizeof(progress->sizestr), "%ld", progress->size);
   }
   if (!inc)
   {
     if (size)
-      mutt_message ("%s (%s)", msg, progress->sizestr);
+      mutt_message("%s (%s)", msg, progress->sizestr);
     else
-      mutt_message (msg);
+      mutt_message(msg);
     return;
   }
-  if (gettimeofday (&tv, NULL) < 0)
-    dprint (1, (debugfile, "gettimeofday failed: %d\n", errno));
+  if (gettimeofday(&tv, NULL) < 0)
+    mutt_debug(1, "gettimeofday failed: %d\n", errno);
   /* if timestamp is 0 no time-based suppression is done */
   if (TimeInc)
-    progress->timestamp = ((unsigned int) tv.tv_sec * 1000)
-        + (unsigned int) (tv.tv_usec / 1000);
-  mutt_progress_update (progress, 0, 0);
+    progress->timestamp =
+        ((unsigned int) tv.tv_sec * 1000) + (unsigned int) (tv.tv_usec / 1000);
+  mutt_progress_update(progress, 0, 0);
 }
 
 /**
  * message_bar - Draw a colourful progress bar
- * @percent: %age complete
- * @fmt:     printf(1)-like formatting string
- * @...:     Arguments to formatting string
+ * @param percent %age complete
+ * @param fmt     printf(1)-like formatting string
+ * @param ...     Arguments to formatting string
  */
-static void
-message_bar (int percent, const char *fmt, ...)
+static void message_bar(int percent, const char *fmt, ...)
 {
   va_list ap;
   char buf[STRING], buf2[STRING];
   int w = percent * COLS / 100;
   size_t l;
 
-  va_start (ap, fmt);
-  vsnprintf (buf, sizeof (buf), fmt, ap);
-  l = mutt_strwidth (buf);
-  va_end (ap);
+  va_start(ap, fmt);
+  vsnprintf(buf, sizeof(buf), fmt, ap);
+  l = mutt_strwidth(buf);
+  va_end(ap);
 
-  mutt_format_string (buf2, sizeof (buf2), 0, COLS-2, FMT_LEFT, 0, buf, sizeof (buf), 0);
+  mutt_simple_format(buf2, sizeof(buf2), 0, COLS - 2, FMT_LEFT, 0, buf, sizeof(buf), 0);
 
-  move (LINES - 1, 0);
+  move(LINES - 1, 0);
 
   if (ColorDefs[MT_COLOR_PROGRESS] == 0)
   {
-    addstr (buf2);
+    addstr(buf2);
   }
   else
   {
@@ -460,11 +517,11 @@ message_bar (int percent, const char *fmt, ...)
     {
       /* The string fits within the colour bar */
       SETCOLOR(MT_COLOR_PROGRESS);
-      addstr (buf2);
+      addstr(buf2);
       w -= l;
       while (w--)
       {
-        addch (' ');
+        addch(' ');
       }
       SETCOLOR(MT_COLOR_NORMAL);
     }
@@ -472,15 +529,15 @@ message_bar (int percent, const char *fmt, ...)
     {
       /* The string is too long for the colour bar */
       char ch;
-      int off = mutt_wstr_trunc (buf2, sizeof (buf2), w, NULL);
+      int off = mutt_wstr_trunc(buf2, sizeof(buf2), w, NULL);
 
       ch = buf2[off];
       buf2[off] = 0;
       SETCOLOR(MT_COLOR_PROGRESS);
-      addstr (buf2);
+      addstr(buf2);
       buf2[off] = ch;
       SETCOLOR(MT_COLOR_NORMAL);
-      addstr (&buf2[off]);
+      addstr(&buf2[off]);
     }
   }
 
@@ -488,49 +545,48 @@ message_bar (int percent, const char *fmt, ...)
   mutt_refresh();
 }
 
-void mutt_progress_update (progress_t* progress, long pos, int percent)
+void mutt_progress_update(struct Progress *progress, long pos, int percent)
 {
   char posstr[SHORT_STRING];
-  short update = 0;
+  bool update = false;
   struct timeval tv = { 0, 0 };
   unsigned int now = 0;
 
-  if (option(OPTNOCURSES))
+  if (option(OPT_NO_CURSES))
     return;
 
   if (!progress->inc)
     goto out;
 
   /* refresh if size > inc */
-  if (progress->flags & MUTT_PROGRESS_SIZE &&
-      (pos >= progress->pos + (progress->inc << 10)))
-    update = 1;
+  if (progress->flags & MUTT_PROGRESS_SIZE && (pos >= progress->pos + (progress->inc << 10)))
+    update = true;
   else if (pos >= progress->pos + progress->inc)
-    update = 1;
+    update = true;
 
   /* skip refresh if not enough time has passed */
-  if (update && progress->timestamp && !gettimeofday (&tv, NULL)) {
-    now = ((unsigned int) tv.tv_sec * 1000)
-          + (unsigned int) (tv.tv_usec / 1000);
+  if (update && progress->timestamp && !gettimeofday(&tv, NULL))
+  {
+    now = ((unsigned int) tv.tv_sec * 1000) + (unsigned int) (tv.tv_usec / 1000);
     if (now && now - progress->timestamp < TimeInc)
-      update = 0;
+      update = false;
   }
 
   /* always show the first update */
   if (!pos)
-    update = 1;
+    update = true;
 
   if (update)
   {
     if (progress->flags & MUTT_PROGRESS_SIZE)
     {
       pos = pos / (progress->inc << 10) * (progress->inc << 10);
-      mutt_pretty_size (posstr, sizeof (posstr), pos);
+      mutt_pretty_size(posstr, sizeof(posstr), pos);
     }
     else
-      snprintf (posstr, sizeof (posstr), "%ld", pos);
+      snprintf(posstr, sizeof(posstr), "%ld", pos);
 
-    dprint (5, (debugfile, "updating progress: %s\n", posstr));
+    mutt_debug(5, "updating progress: %s\n", posstr);
 
     progress->pos = pos;
     if (now)
@@ -538,316 +594,350 @@ void mutt_progress_update (progress_t* progress, long pos, int percent)
 
     if (progress->size > 0)
     {
-      message_bar ((percent > 0) ? percent : (int) (100.0 * (double) progress->pos / progress->size),
-        "%s %s/%s (%d%%)", progress->msg, posstr, progress->sizestr,
-        (percent > 0) ? percent : (int) (100.0 * (double) progress->pos / progress->size));
+      message_bar((percent > 0) ? percent : (int) (100.0 * (double) progress->pos /
+                                                   progress->size),
+                  "%s %s/%s (%d%%)", progress->msg, posstr, progress->sizestr,
+                  (percent > 0) ? percent : (int) (100.0 * (double) progress->pos /
+                                                   progress->size));
     }
     else
     {
       if (percent > 0)
-        message_bar (percent, "%s %s (%d%%)", progress->msg, posstr, percent);
+        message_bar(percent, "%s %s (%d%%)", progress->msg, posstr, percent);
       else
-        mutt_message ("%s %s", progress->msg, posstr);
+        mutt_message("%s %s", progress->msg, posstr);
     }
   }
 
 out:
   if (pos >= progress->size)
-    mutt_clear_error ();
+    mutt_clear_error();
 }
 
-void mutt_init_windows ()
+void mutt_init_windows(void)
 {
-  MuttHelpWindow = safe_calloc (sizeof (mutt_window_t), 1);
-  MuttIndexWindow = safe_calloc (sizeof (mutt_window_t), 1);
-  MuttStatusWindow = safe_calloc (sizeof (mutt_window_t), 1);
-  MuttMessageWindow = safe_calloc (sizeof (mutt_window_t), 1);
+  MuttHelpWindow = safe_calloc(1, sizeof(struct MuttWindow));
+  MuttIndexWindow = safe_calloc(1, sizeof(struct MuttWindow));
+  MuttStatusWindow = safe_calloc(1, sizeof(struct MuttWindow));
+  MuttMessageWindow = safe_calloc(1, sizeof(struct MuttWindow));
 #ifdef USE_SIDEBAR
-  MuttSidebarWindow = safe_calloc (sizeof (mutt_window_t), 1);
+  MuttSidebarWindow = safe_calloc(1, sizeof(struct MuttWindow));
 #endif
 }
 
-void mutt_free_windows ()
+void mutt_free_windows(void)
 {
-  FREE (&MuttHelpWindow);
-  FREE (&MuttIndexWindow);
-  FREE (&MuttStatusWindow);
-  FREE (&MuttMessageWindow);
+  FREE(&MuttHelpWindow);
+  FREE(&MuttIndexWindow);
+  FREE(&MuttStatusWindow);
+  FREE(&MuttMessageWindow);
 #ifdef USE_SIDEBAR
-  FREE (&MuttSidebarWindow);
+  FREE(&MuttSidebarWindow);
 #endif
 }
 
-void mutt_reflow_windows (void)
+void mutt_reflow_windows(void)
 {
-  if (option (OPTNOCURSES))
+  if (option(OPT_NO_CURSES))
     return;
 
-  dprint (2, (debugfile, "In mutt_reflow_windows\n"));
+  mutt_debug(2, "In mutt_reflow_windows\n");
 
   MuttStatusWindow->rows = 1;
   MuttStatusWindow->cols = COLS;
-  MuttStatusWindow->row_offset = option (OPTSTATUSONTOP) ? 0 : LINES - 2;
+  MuttStatusWindow->row_offset = option(OPT_STATUS_ON_TOP) ? 0 : LINES - 2;
   MuttStatusWindow->col_offset = 0;
 
-  memcpy (MuttHelpWindow, MuttStatusWindow, sizeof (mutt_window_t));
-  if (! option (OPTHELP))
+  memcpy(MuttHelpWindow, MuttStatusWindow, sizeof(struct MuttWindow));
+  if (!option(OPT_HELP))
     MuttHelpWindow->rows = 0;
   else
-    MuttHelpWindow->row_offset = option (OPTSTATUSONTOP) ? LINES - 2 : 0;
+    MuttHelpWindow->row_offset = option(OPT_STATUS_ON_TOP) ? LINES - 2 : 0;
 
-  memcpy (MuttMessageWindow, MuttStatusWindow, sizeof (mutt_window_t));
+  memcpy(MuttMessageWindow, MuttStatusWindow, sizeof(struct MuttWindow));
   MuttMessageWindow->row_offset = LINES - 1;
 
-  memcpy (MuttIndexWindow, MuttStatusWindow, sizeof (mutt_window_t));
-  MuttIndexWindow->rows = MAX(LINES - MuttStatusWindow->rows -
-			      MuttHelpWindow->rows - MuttMessageWindow->rows, 0);
-  MuttIndexWindow->row_offset = option (OPTSTATUSONTOP) ? MuttStatusWindow->rows :
-                                                          MuttHelpWindow->rows;
+  memcpy(MuttIndexWindow, MuttStatusWindow, sizeof(struct MuttWindow));
+  MuttIndexWindow->rows = MAX(
+      LINES - MuttStatusWindow->rows - MuttHelpWindow->rows - MuttMessageWindow->rows, 0);
+  MuttIndexWindow->row_offset =
+      option(OPT_STATUS_ON_TOP) ? MuttStatusWindow->rows : MuttHelpWindow->rows;
 
 #ifdef USE_SIDEBAR
-  if (option (OPTSIDEBAR))
+  if (option(OPT_SIDEBAR))
   {
-    memcpy (MuttSidebarWindow, MuttIndexWindow, sizeof (mutt_window_t));
+    memcpy(MuttSidebarWindow, MuttIndexWindow, sizeof(struct MuttWindow));
     MuttSidebarWindow->cols = SidebarWidth;
     MuttIndexWindow->cols -= SidebarWidth;
 
-    if (option (OPTSIDEBARONRIGHT)) {
+    if (option(OPT_SIDEBAR_ON_RIGHT))
+    {
       MuttSidebarWindow->col_offset = COLS - SidebarWidth;
-    } else {
+    }
+    else
+    {
       MuttIndexWindow->col_offset += SidebarWidth;
     }
   }
 #endif
+
+  mutt_set_current_menu_redraw_full();
+  /* the pager menu needs this flag set to recalc line_info */
+  mutt_set_current_menu_redraw(REDRAW_FLOW);
 }
 
-int mutt_window_move (mutt_window_t *win, int row, int col)
+static void reflow_message_window_rows(int mw_rows)
 {
-  return move (win->row_offset + row, win->col_offset + col);
+  MuttMessageWindow->rows = mw_rows;
+  MuttMessageWindow->row_offset = LINES - mw_rows;
+
+  MuttStatusWindow->row_offset = option(OPT_STATUS_ON_TOP) ? 0 : LINES - mw_rows - 1;
+
+  if (option(OPT_HELP))
+    MuttHelpWindow->row_offset = option(OPT_STATUS_ON_TOP) ? LINES - mw_rows - 1 : 0;
+
+  MuttIndexWindow->rows = MAX(
+      LINES - MuttStatusWindow->rows - MuttHelpWindow->rows - MuttMessageWindow->rows, 0);
+
+#ifdef USE_SIDEBAR
+  if (option(OPT_SIDEBAR))
+    MuttSidebarWindow->rows = MuttIndexWindow->rows;
+#endif
+
+  /* We don't also set REDRAW_FLOW because this function only
+   * changes rows and is a temporary adjustment. */
+  mutt_set_current_menu_redraw_full();
 }
 
-int mutt_window_mvaddch (mutt_window_t *win, int row, int col, const chtype ch)
+int mutt_window_move(struct MuttWindow *win, int row, int col)
 {
-  return mvaddch (win->row_offset + row, win->col_offset + col, ch);
+  return move(win->row_offset + row, win->col_offset + col);
 }
 
-int mutt_window_mvaddstr (mutt_window_t *win, int row, int col, const char *str)
+int mutt_window_mvaddch(struct MuttWindow *win, int row, int col, const chtype ch)
 {
-  return mvaddstr (win->row_offset + row, win->col_offset + col, str);
+  return mvaddch(win->row_offset + row, win->col_offset + col, ch);
+}
+
+int mutt_window_mvaddstr(struct MuttWindow *win, int row, int col, const char *str)
+{
+  return mvaddstr(win->row_offset + row, win->col_offset + col, str);
 }
 
 #ifdef USE_SLANG_CURSES
-static int vw_printw (SLcurses_Window_Type *win, const char *fmt, va_list ap)
+static int vw_printw(SLcurses_Window_Type *win, const char *fmt, va_list ap)
 {
   char buf[LONG_STRING];
 
-  (void) SLvsnprintf (buf, sizeof (buf), (char *)fmt, ap);
-  SLcurses_waddnstr (win, buf, -1);
+  (void) SLvsnprintf(buf, sizeof(buf), (char *) fmt, ap);
+  SLcurses_waddnstr(win, buf, -1);
   return 0;
 }
 #endif
 
-int mutt_window_mvprintw (mutt_window_t *win, int row, int col, const char *fmt, ...)
+int mutt_window_mvprintw(struct MuttWindow *win, int row, int col, const char *fmt, ...)
 {
   va_list ap;
   int rv;
 
-  if ((rv = mutt_window_move (win, row, col) != ERR))
+  if ((rv = mutt_window_move(win, row, col) != ERR))
   {
-    va_start (ap, fmt);
-    rv = vw_printw (stdscr, fmt, ap);
-    va_end (ap);
+    va_start(ap, fmt);
+    rv = vw_printw(stdscr, fmt, ap);
+    va_end(ap);
   }
 
   return rv;
 }
 
-/* Assumes the cursor has already been positioned within the
- * window.
+/**
+ * mutt_window_clrtoeol - Clear to the end of the line
+ *
+ * Assumes the cursor has already been positioned within the window.
  */
-void mutt_window_clrtoeol (mutt_window_t *win)
+void mutt_window_clrtoeol(struct MuttWindow *win)
 {
   int row, col, curcol;
 
   if (win->col_offset + win->cols == COLS)
-    clrtoeol ();
+    clrtoeol();
   else
   {
-    getyx (stdscr, row, col);
+    getyx(stdscr, row, col);
     curcol = col;
     while (curcol < win->col_offset + win->cols)
     {
-      addch (' ');
+      addch(' ');
       curcol++;
     }
-    move (row, col);
+    move(row, col);
   }
 }
 
-void mutt_window_clearline (mutt_window_t *win, int row)
+void mutt_window_clearline(struct MuttWindow *win, int row)
 {
-  mutt_window_move (win, row, 0);
-  mutt_window_clrtoeol (win);
+  mutt_window_move(win, row, 0);
+  mutt_window_clrtoeol(win);
 }
 
-/* Assumes the current position is inside the window.
- * Otherwise it will happily return negative or values outside
- * the window boundaries
+/**
+ * mutt_window_getyx - Get the cursor position in the window
+ *
+ * Assumes the current position is inside the window.  Otherwise it will
+ * happily return negative or values outside the window boundaries
  */
-void mutt_window_getyx (mutt_window_t *win, int *y, int *x)
+void mutt_window_getyx(struct MuttWindow *win, int *y, int *x)
 {
   int row, col;
 
-  getyx (stdscr, row, col);
+  getyx(stdscr, row, col);
   if (y)
     *y = row - win->row_offset;
   if (x)
     *x = col - win->col_offset;
 }
 
-
-void mutt_show_error (void)
+void mutt_show_error(void)
 {
-  if (option (OPTKEEPQUIET))
+  if (option(OPT_KEEP_QUIET))
     return;
-  
-  SETCOLOR (option (OPTMSGERR) ? MT_COLOR_ERROR : MT_COLOR_MESSAGE);
-  mutt_window_mvaddstr (MuttMessageWindow, 0, 0, Errorbuf);
+
+  SETCOLOR(option(OPT_MSG_ERR) ? MT_COLOR_ERROR : MT_COLOR_MESSAGE);
+  mutt_window_mvaddstr(MuttMessageWindow, 0, 0, ErrorBuf);
   NORMAL_COLOR;
   mutt_window_clrtoeol(MuttMessageWindow);
 }
 
-void mutt_endwin (const char *msg)
+void mutt_endwin(const char *msg)
 {
   int e = errno;
 
-  if (!option (OPTNOCURSES))
+  if (!option(OPT_NO_CURSES))
   {
     /* at least in some situations (screen + xterm under SuSE11/12) endwin()
      * doesn't properly flush the screen without an explicit call.
      */
     mutt_refresh();
-    endwin ();
+    endwin();
   }
-  
+
   if (msg && *msg)
   {
-    puts (msg);
-    fflush (stdout);
+    puts(msg);
+    fflush(stdout);
   }
 
   errno = e;
 }
 
-void mutt_perror (const char *s)
+void mutt_perror_debug(const char *s)
 {
-  char *p = strerror (errno);
+  char *p = strerror(errno);
 
-  dprint (1, (debugfile, "%s: %s (errno = %d)\n", s, 
-      p ? p : "unknown error", errno));
-  mutt_error ("%s: %s (errno = %d)", s, p ? p : _("unknown error"), errno);
+  mutt_debug(1, "%s: %s (errno = %d)\n", s, p ? p : "unknown error", errno);
+  mutt_error("%s: %s (errno = %d)", s, p ? p : _("unknown error"), errno);
 }
 
-int mutt_any_key_to_continue (const char *s)
+int mutt_any_key_to_continue(const char *s)
 {
   struct termios t;
   struct termios old;
   int f, ch;
 
-  f = open ("/dev/tty", O_RDONLY);
-  tcgetattr (f, &t);
-  memcpy ((void *)&old, (void *)&t, sizeof(struct termios)); /* save original state */
+  f = open("/dev/tty", O_RDONLY);
+  if (f < 0)
+    return EOF;
+  tcgetattr(f, &t);
+  memcpy((void *) &old, (void *) &t, sizeof(struct termios)); /* save original state */
   t.c_lflag &= ~(ICANON | ECHO);
   t.c_cc[VMIN] = 1;
   t.c_cc[VTIME] = 0;
-  tcsetattr (f, TCSADRAIN, &t);
-  fflush (stdout);
+  tcsetattr(f, TCSADRAIN, &t);
+  fflush(stdout);
   if (s)
-    fputs (s, stdout);
+    fputs(s, stdout);
   else
-    fputs (_("Press any key to continue..."), stdout);
-  fflush (stdout);
-  ch = fgetc (stdin);
-  fflush (stdin);
-  tcsetattr (f, TCSADRAIN, &old);
-  close (f);
-  fputs ("\r\n", stdout);
-  mutt_clear_error ();
-  return (ch);
+    fputs(_("Press any key to continue..."), stdout);
+  fflush(stdout);
+  ch = fgetc(stdin);
+  fflush(stdin);
+  tcsetattr(f, TCSADRAIN, &old);
+  close(f);
+  fputs("\r\n", stdout);
+  mutt_clear_error();
+  return (ch >= 0) ? ch : EOF;
 }
 
-int mutt_do_pager (const char *banner,
-		   const char *tempfile,
-		   int do_color,
-		   pager_t *info)
+int mutt_do_pager(const char *banner, const char *tempfile, int do_color, struct Pager *info)
 {
   int rc;
-  
-  if (!Pager || mutt_strcmp (Pager, "builtin") == 0)
-    rc = mutt_pager (banner, tempfile, do_color, info);
+
+  if (!Pager || (mutt_strcmp(Pager, "builtin") == 0))
+    rc = mutt_pager(banner, tempfile, do_color, info);
   else
   {
     char cmd[STRING];
-    
-    mutt_endwin (NULL);
-    mutt_expand_file_fmt (cmd, sizeof(cmd), Pager, tempfile);
-    if (mutt_system (cmd) == -1)
+
+    mutt_endwin(NULL);
+    mutt_expand_file_fmt(cmd, sizeof(cmd), Pager, tempfile);
+    if (mutt_system(cmd) == -1)
     {
-      mutt_error (_("Error running \"%s\"!"), cmd);
+      mutt_error(_("Error running \"%s\"!"), cmd);
       rc = -1;
     }
     else
       rc = 0;
-    mutt_unlink (tempfile);
+    mutt_unlink(tempfile);
   }
 
   return rc;
 }
 
-int _mutt_enter_fname (const char *prompt, char *buf, size_t blen,
-		int *redraw, int buffy, int multiple,
-		char ***files, int *numfiles, int flags)
+int _mutt_enter_fname(const char *prompt, char *buf, size_t blen, int buffy,
+                      int multiple, char ***files, int *numfiles, int flags)
 {
-  event_t ch;
+  struct Event ch;
 
-  SETCOLOR (MT_COLOR_PROMPT);
-  mutt_window_mvaddstr (MuttMessageWindow, 0, 0, (char *) prompt);
-  addstr (_(" ('?' for list): "));
+  SETCOLOR(MT_COLOR_PROMPT);
+  mutt_window_mvaddstr(MuttMessageWindow, 0, 0, (char *) prompt);
+  addstr(_(" ('?' for list): "));
   NORMAL_COLOR;
   if (buf[0])
-    addstr (buf);
-  mutt_window_clrtoeol (MuttMessageWindow);
-  mutt_refresh ();
+    addstr(buf);
+  mutt_window_clrtoeol(MuttMessageWindow);
+  mutt_refresh();
 
   ch = mutt_getch();
   if (ch.ch < 0)
   {
-    mutt_window_clearline (MuttMessageWindow, 0);
-    return (-1);
+    mutt_window_clearline(MuttMessageWindow, 0);
+    return -1;
   }
   else if (ch.ch == '?')
   {
-    mutt_refresh ();
+    mutt_refresh();
     buf[0] = 0;
-    if (!flags)
-      flags = MUTT_SEL_FOLDER | (multiple ? MUTT_SEL_MULTI : 0);
 
-    _mutt_select_file (buf, blen, flags, files, numfiles);
-    *redraw = REDRAW_FULL;
+    if (!flags)
+      flags = MUTT_SEL_FOLDER;
+    if (multiple)
+      flags |= MUTT_SEL_MULTI;
+    if (buffy)
+      flags |= MUTT_SEL_BUFFY;
+    _mutt_select_file(buf, blen, flags, files, numfiles);
   }
   else
   {
-    char *pc = safe_malloc (mutt_strlen (prompt) + 3);
+    char *pc = safe_malloc(mutt_strlen(prompt) + 3);
 
-    sprintf (pc, "%s: ", prompt);	/* __SPRINTF_CHECKED__ */
-    mutt_unget_event (ch.op ? 0 : ch.ch, ch.op ? ch.op : 0);
-    if (_mutt_get_field (pc, buf, blen, (buffy ? MUTT_EFILE : MUTT_FILE) | MUTT_CLEAR, multiple, files, numfiles)
-	!= 0)
+    sprintf(pc, "%s: ", prompt);
+    mutt_unget_event(ch.op ? 0 : ch.ch, ch.op ? ch.op : 0);
+    if (_mutt_get_field(pc, buf, blen, (buffy ? MUTT_EFILE : MUTT_FILE) | MUTT_CLEAR,
+                        multiple, files, numfiles) != 0)
       buf[0] = 0;
-    MAYBE_REDRAW (*redraw);
-    FREE (&pc);
+    FREE(&pc);
 #ifdef USE_NOTMUCH
-    if ((flags & MUTT_SEL_VFOLDER) && buf[0] && strncmp(buf, "notmuch://", 10) != 0)
+    if ((flags & MUTT_SEL_VFOLDER) && buf[0] && (strncmp(buf, "notmuch://", 10) != 0))
       nm_description_to_path(buf, buf, blen);
 #endif
   }
@@ -855,47 +945,49 @@ int _mutt_enter_fname (const char *prompt, char *buf, size_t blen,
   return 0;
 }
 
-void mutt_unget_event (int ch, int op)
+void mutt_unget_event(int ch, int op)
 {
-  event_t tmp;
+  struct Event tmp;
 
   tmp.ch = ch;
   tmp.op = op;
 
   if (UngetCount >= UngetLen)
-    safe_realloc (&UngetKeyEvents, (UngetLen += 16) * sizeof(event_t));
+    safe_realloc(&UngetKeyEvents, (UngetLen += 16) * sizeof(struct Event));
 
   UngetKeyEvents[UngetCount++] = tmp;
 }
 
-void mutt_unget_string (char *s)
+void mutt_unget_string(char *s)
 {
-  char *p = s + mutt_strlen (s) - 1;
+  char *p = s + mutt_strlen(s) - 1;
 
   while (p >= s)
   {
-    mutt_unget_event ((unsigned char)*p--, 0);
+    mutt_unget_event((unsigned char) *p--, 0);
   }
 }
 
-/*
+/**
+ * mutt_push_macro_event - Add the character/operation to the macro buffer
+ *
  * Adds the ch/op to the macro buffer.
  * This should be used for macros, push, and exec commands only.
  */
-void mutt_push_macro_event (int ch, int op)
+void mutt_push_macro_event(int ch, int op)
 {
-  event_t tmp;
+  struct Event tmp;
 
   tmp.ch = ch;
   tmp.op = op;
 
   if (MacroBufferCount >= MacroBufferLen)
-    safe_realloc (&MacroEvents, (MacroBufferLen += 128) * sizeof(event_t));
+    safe_realloc(&MacroEvents, (MacroBufferLen += 128) * sizeof(struct Event));
 
   MacroEvents[MacroBufferCount++] = tmp;
 }
 
-void mutt_flush_macro_to_endcond (void)
+void mutt_flush_macro_to_endcond(void)
 {
   UngetCount = 0;
   while (MacroBufferCount > 0)
@@ -905,110 +997,163 @@ void mutt_flush_macro_to_endcond (void)
   }
 }
 
-void mutt_flushinp (void)
+/**
+ * mutt_flush_unget_to_endcond - Clear entries from UngetKeyEvents
+ *
+ * Normally, OP_END_COND should only be in the MacroEvent buffer.
+ * km_error_key() (ab)uses OP_END_COND as a barrier in the unget buffer, and
+ * calls this function to flush.
+ */
+void mutt_flush_unget_to_endcond(void)
+{
+  while (UngetCount > 0)
+  {
+    if (UngetKeyEvents[--UngetCount].op == OP_END_COND)
+      return;
+  }
+}
+
+void mutt_flushinp(void)
 {
   UngetCount = 0;
   MacroBufferCount = 0;
-  flushinp ();
+  flushinp();
 }
 
 #if (defined(USE_SLANG_CURSES) || defined(HAVE_CURS_SET))
-/* The argument can take 3 values:
- * -1: restore the value of the last call
- *  0: make the cursor invisible
- *  1: make the cursor visible
+/**
+ * mutt_curs_set - Set the cursor position
+ * @param cursor
+ * * -1: restore the value of the last call
+ * *  0: make the cursor invisible
+ * *  1: make the cursor visible
  */
-void mutt_curs_set (int cursor)
+void mutt_curs_set(int cursor)
 {
   static int SavedCursor = 1;
-  
+
   if (cursor < 0)
     cursor = SavedCursor;
   else
     SavedCursor = cursor;
-  
-  if (curs_set (cursor) == ERR) {
-    if (cursor == 1)	/* cnorm */
-      curs_set (2);	/* cvvis */
+
+  if (curs_set(cursor) == ERR)
+  {
+    if (cursor == 1) /* cnorm */
+      curs_set(2);   /* cvvis */
   }
 }
 #endif
 
-int mutt_multi_choice (char *prompt, char *letters)
+int mutt_multi_choice(char *prompt, char *letters)
 {
-  event_t ch;
+  struct Event ch;
   int choice;
-  char *p;
+  bool redraw = true;
+  int prompt_lines = 1;
+  char *p = NULL;
 
-  SETCOLOR (MT_COLOR_PROMPT);
-  mutt_window_mvaddstr (MuttMessageWindow, 0, 0, prompt);
-  NORMAL_COLOR;
-  mutt_window_clrtoeol (MuttMessageWindow);
-  FOREVER
+  while (true)
   {
-    mutt_refresh ();
-    ch  = mutt_getch ();
+    if (redraw || SigWinch)
+    {
+      redraw = false;
+#if defined(USE_SLANG_CURSES) || defined(HAVE_RESIZETERM)
+      if (SigWinch)
+      {
+        SigWinch = 0;
+        mutt_resize_screen();
+        clearok(stdscr, TRUE);
+        mutt_current_menu_redraw();
+      }
+#endif
+      if (MuttMessageWindow->cols)
+      {
+        prompt_lines = (mutt_strwidth(prompt) + MuttMessageWindow->cols - 1) /
+                       MuttMessageWindow->cols;
+        prompt_lines = MAX(1, MIN(3, prompt_lines));
+      }
+      if (prompt_lines != MuttMessageWindow->rows)
+      {
+        reflow_message_window_rows(prompt_lines);
+        mutt_current_menu_redraw();
+      }
+
+      SETCOLOR(MT_COLOR_PROMPT);
+      mutt_window_mvaddstr(MuttMessageWindow, 0, 0, prompt);
+      NORMAL_COLOR;
+      mutt_window_clrtoeol(MuttMessageWindow);
+    }
+
+    mutt_refresh();
+    /* SigWinch is not processed unless timeout is set */
+    timeout(30 * 1000);
+    ch = mutt_getch();
+    timeout(-1);
+    if (ch.ch == -2)
+      continue;
     /* (ch.ch == 0) is technically possible.  Treat the same as < 0 (abort) */
-    if (ch.ch <= 0 || CI_is_return (ch.ch))
+    if (ch.ch <= 0 || CI_is_return(ch.ch))
     {
       choice = -1;
       break;
     }
     else
     {
-      p = strchr (letters, ch.ch);
+      p = strchr(letters, ch.ch);
       if (p)
       {
-	choice = p - letters + 1;
-	break;
+        choice = p - letters + 1;
+        break;
       }
       else if (ch.ch <= '9' && ch.ch > '0')
       {
-	choice = ch.ch - '0';
-	if (choice <= mutt_strlen (letters))
-	  break;
+        choice = ch.ch - '0';
+        if (choice <= mutt_strlen(letters))
+          break;
       }
     }
-    BEEP ();
+    BEEP();
   }
-  mutt_window_clearline (MuttMessageWindow, 0);
-  mutt_refresh ();
+  if (MuttMessageWindow->rows != 1)
+  {
+    reflow_message_window_rows(1);
+    mutt_current_menu_redraw();
+  }
+  else
+    mutt_window_clearline(MuttMessageWindow, 0);
+  mutt_refresh();
   return choice;
 }
 
-/*
- * addwch would be provided by an up-to-date curses library
+/**
+ * mutt_addwch - addwch would be provided by an up-to-date curses library
  */
-
-int mutt_addwch (wchar_t wc)
+int mutt_addwch(wchar_t wc)
 {
-  char buf[MB_LEN_MAX*2];
+  char buf[MB_LEN_MAX * 2];
   mbstate_t mbstate;
   size_t n1, n2;
 
-  memset (&mbstate, 0, sizeof (mbstate));
-  if ((n1 = wcrtomb (buf, wc, &mbstate)) == (size_t)(-1) ||
-      (n2 = wcrtomb (buf + n1, 0, &mbstate)) == (size_t)(-1))
+  memset(&mbstate, 0, sizeof(mbstate));
+  if ((n1 = wcrtomb(buf, wc, &mbstate)) == (size_t)(-1) ||
+      (n2 = wcrtomb(buf + n1, 0, &mbstate)) == (size_t)(-1))
     return -1; /* ERR */
   else
-    return addstr (buf);
+    return addstr(buf);
 }
 
-
-/*
- * This formats a string, a bit like
- * snprintf (dest, destlen, "%-*.*s", min_width, max_width, s),
- * except that the widths refer to the number of character cells
- * when printed.
+/**
+ * mutt_simple_format - Format a string, like snprintf()
+ *
+ * This formats a string, a bit like snprintf (dest, destlen, "%-*.*s",
+ * min_width, max_width, s), except that the widths refer to the number of
+ * character cells when printed.
  */
-
-void mutt_format_string (char *dest, size_t destlen,
-			 int min_width, int max_width,
-			 int justify, char m_pad_char,
-			 const char *s, size_t n,
-			 int arboreal)
+void mutt_simple_format(char *dest, size_t destlen, int min_width, int max_width,
+                        int justify, char m_pad_char, const char *s, size_t n, int arboreal)
 {
-  char *p;
+  char *p = NULL;
   wchar_t wc;
   int w;
   size_t k, k2;
@@ -1016,55 +1161,60 @@ void mutt_format_string (char *dest, size_t destlen,
   mbstate_t mbstate1, mbstate2;
   int escaped = 0;
 
-  memset(&mbstate1, 0, sizeof (mbstate1));
-  memset(&mbstate2, 0, sizeof (mbstate2));
-  --destlen;
+  memset(&mbstate1, 0, sizeof(mbstate1));
+  memset(&mbstate2, 0, sizeof(mbstate2));
+  destlen--;
   p = dest;
-  for (; n && (k = mbrtowc (&wc, s, n, &mbstate1)); s += k, n -= k)
+  for (; n && (k = mbrtowc(&wc, s, n, &mbstate1)); s += k, n -= k)
   {
     if (k == (size_t)(-1) || k == (size_t)(-2))
     {
       if (k == (size_t)(-1) && errno == EILSEQ)
-	memset (&mbstate1, 0, sizeof (mbstate1));
+        memset(&mbstate1, 0, sizeof(mbstate1));
 
       k = (k == (size_t)(-1)) ? 1 : n;
-      wc = replacement_char ();
+      wc = replacement_char();
     }
-    if (escaped) {
+    if (escaped)
+    {
       escaped = 0;
       w = 0;
-    } else if (arboreal && wc == MUTT_SPECIAL_INDEX) {
+    }
+    else if (arboreal && wc == MUTT_SPECIAL_INDEX)
+    {
       escaped = 1;
       w = 0;
-    } else if (arboreal && wc < MUTT_TREE_MAX) {
+    }
+    else if (arboreal && wc < MUTT_TREE_MAX)
+    {
       w = 1; /* hack */
     }
     else
     {
 #ifdef HAVE_ISWBLANK
-      if (iswblank (wc))
-	wc = ' ';
+      if (iswblank(wc))
+        wc = ' ';
       else
 #endif
-      if (!IsWPrint (wc))
-	wc = '?';
-      w = wcwidth (wc);
+          if (!IsWPrint(wc))
+        wc = '?';
+      w = wcwidth(wc);
     }
     if (w >= 0)
     {
-      if (w > max_width || (k2 = wcrtomb (scratch, wc, &mbstate2)) > destlen)
-	break;
+      if (w > max_width || (k2 = wcrtomb(scratch, wc, &mbstate2)) > destlen)
+        continue;
       min_width -= w;
       max_width -= w;
-      strncpy (p, scratch, k2);
+      strncpy(p, scratch, k2);
       p += k2;
       destlen -= k2;
     }
   }
-  w = (int)destlen < min_width ? destlen : min_width;
+  w = (int) destlen < min_width ? destlen : min_width;
   if (w <= 0)
     *p = '\0';
-  else if (justify == FMT_RIGHT)	/* right justify */
+  else if (justify == FMT_RIGHT) /* right justify */
   {
     p[w] = '\0';
     while (--p >= dest)
@@ -1072,10 +1222,10 @@ void mutt_format_string (char *dest, size_t destlen,
     while (--w >= 0)
       dest[w] = m_pad_char;
   }
-  else if (justify == FMT_CENTER)	/* center */
+  else if (justify == FMT_CENTER) /* center */
   {
     char *savedp = p;
-    int half = (w+1) / 2; /* half of cushion space */
+    int half = (w + 1) / 2; /* half of cushion space */
 
     p[w] = '\0';
 
@@ -1092,7 +1242,7 @@ void mutt_format_string (char *dest, size_t destlen,
     while (half--)
       dest[half] = m_pad_char;
   }
-  else					/* left justify */
+  else /* left justify */
   {
     while (--w >= 0)
       *p++ = m_pad_char;
@@ -1100,99 +1250,106 @@ void mutt_format_string (char *dest, size_t destlen,
   }
 }
 
-/*
+/**
+ * format_s_x - Format a string like snprintf()
+ *
  * This formats a string rather like
  *   snprintf (fmt, sizeof (fmt), "%%%ss", prefix);
  *   snprintf (dest, destlen, fmt, s);
  * except that the numbers in the conversion specification refer to
  * the number of character cells when printed.
  */
-
-static void mutt_format_s_x (char *dest,
-			     size_t destlen,
-			     const char *prefix,
-			     const char *s,
-			     int arboreal)
+static void format_s_x(char *dest, size_t destlen, const char *prefix,
+                       const char *s, int arboreal)
 {
   int justify = FMT_RIGHT;
-  char *p;
+  char *p = NULL;
   int min_width;
   int max_width = INT_MAX;
 
   if (*prefix == '-')
-    ++prefix, justify = FMT_LEFT;
+  {
+    prefix++;
+    justify = FMT_LEFT;
+  }
   else if (*prefix == '=')
-    ++prefix, justify = FMT_CENTER;
-  min_width = strtol (prefix, &p, 10);
+  {
+    prefix++;
+    justify = FMT_CENTER;
+  }
+  min_width = strtol(prefix, &p, 10);
   if (*p == '.')
   {
     prefix = p + 1;
-    max_width = strtol (prefix, &p, 10);
+    max_width = strtol(prefix, &p, 10);
     if (p <= prefix)
       max_width = INT_MAX;
   }
 
-  mutt_format_string (dest, destlen, min_width, max_width,
-		      justify, ' ', s, mutt_strlen (s), arboreal);
+  mutt_simple_format(dest, destlen, min_width, max_width, justify, ' ', s,
+                     mutt_strlen(s), arboreal);
 }
 
-void mutt_format_s (char *dest,
-		    size_t destlen,
-		    const char *prefix,
-		    const char *s)
+void mutt_format_s(char *dest, size_t destlen, const char *prefix, const char *s)
 {
-  mutt_format_s_x (dest, destlen, prefix, s, 0);
+  format_s_x(dest, destlen, prefix, s, 0);
 }
 
-void mutt_format_s_tree (char *dest,
-			 size_t destlen,
-			 const char *prefix,
-			 const char *s)
+void mutt_format_s_tree(char *dest, size_t destlen, const char *prefix, const char *s)
 {
-  mutt_format_s_x (dest, destlen, prefix, s, 1);
+  format_s_x(dest, destlen, prefix, s, 1);
 }
 
-/*
- * mutt_paddstr (n, s) is almost equivalent to
- * mutt_format_string (bigbuf, big, n, n, FMT_LEFT, ' ', s, big, 0), addstr (bigbuf)
+/**
+ * mutt_paddstr - Display a string on screen, padded if necessary
+ * @param n Final width of field
+ * @param s String to display
  */
-
-void mutt_paddstr (int n, const char *s)
+void mutt_paddstr(int n, const char *s)
 {
   wchar_t wc;
   int w;
   size_t k;
-  size_t len = mutt_strlen (s);
+  size_t len = mutt_strlen(s);
   mbstate_t mbstate;
 
-  memset (&mbstate, 0, sizeof (mbstate));
-  for (; len && (k = mbrtowc (&wc, s, len, &mbstate)); s += k, len -= k)
+  memset(&mbstate, 0, sizeof(mbstate));
+  for (; len && (k = mbrtowc(&wc, s, len, &mbstate)); s += k, len -= k)
   {
     if (k == (size_t)(-1) || k == (size_t)(-2))
     {
-      if (k == (size_t) (-1))
-	memset (&mbstate, 0, sizeof (mbstate));
+      if (k == (size_t)(-1))
+        memset(&mbstate, 0, sizeof(mbstate));
       k = (k == (size_t)(-1)) ? 1 : len;
-      wc = replacement_char ();
+      wc = replacement_char();
     }
-    if (!IsWPrint (wc))
+    if (!IsWPrint(wc))
       wc = '?';
-    w = wcwidth (wc);
+    w = wcwidth(wc);
     if (w >= 0)
     {
       if (w > n)
-	break;
-      addnstr ((char *)s, k);
+        break;
+      addnstr((char *) s, k);
       n -= w;
     }
   }
   while (n-- > 0)
-    addch (' ');
+    addch(' ');
 }
 
-/* See how many bytes to copy from string so its at most maxlen bytes
- * long and maxwid columns wide */
-size_t mutt_wstr_trunc (const char *src, size_t maxlen, size_t maxwid, size_t *width)
+/**
+ * mutt_wstr_trunc - Work out how to truncate a widechar string
+ * @param[in]  src    String to measute
+ * @param[in]  maxlen Maximum length of string in bytes
+ * @param[in]  maxwid Maximum width in screen columns
+ * @param[out] width  Save the truncated screen column width
+ * @retval n Number of bytes to use
+ *
+ * See how many bytes to copy from string so it's at most maxlen bytes long and
+ * maxwid columns wide
+ */
+size_t mutt_wstr_trunc(const char *src, size_t maxlen, size_t maxwid, size_t *width)
 {
   wchar_t wc;
   size_t n, w = 0, l = 0, cl;
@@ -1202,19 +1359,19 @@ size_t mutt_wstr_trunc (const char *src, size_t maxlen, size_t maxwid, size_t *w
   if (!src)
     goto out;
 
-  n = mutt_strlen (src);
+  n = mutt_strlen(src);
 
-  memset (&mbstate, 0, sizeof (mbstate));
-  for (w = 0; n && (cl = mbrtowc (&wc, src, n, &mbstate)); src += cl, n -= cl)
+  memset(&mbstate, 0, sizeof(mbstate));
+  for (w = 0; n && (cl = mbrtowc(&wc, src, n, &mbstate)); src += cl, n -= cl)
   {
     if (cl == (size_t)(-1) || cl == (size_t)(-2))
     {
       if (cl == (size_t)(-1))
-        memset (&mbstate, 0, sizeof (mbstate));
+        memset(&mbstate, 0, sizeof(mbstate));
       cl = (cl == (size_t)(-1)) ? 1 : n;
-      wc = replacement_char ();
+      wc = replacement_char();
     }
-    cw = wcwidth (wc);
+    cw = wcwidth(wc);
     /* hack because MUTT_TREE symbols aren't turned into characters
      * until rendered by print_enriched_string (#3364) */
     if ((cw < 0) && (src[0] == MUTT_SPECIAL_INDEX))
@@ -1225,7 +1382,7 @@ size_t mutt_wstr_trunc (const char *src, size_t maxlen, size_t maxwid, size_t *w
     else if (cw < 0 && cl == 1 && src[0] && src[0] < MUTT_TREE_MAX)
       cw = 1;
     else if (cw < 0)
-      cw = 0;			/* unprintable wchar */
+      cw = 0; /* unprintable wchar */
     if (cl + l > maxlen || cw + w > maxwid)
       break;
     l += cl;
@@ -1237,14 +1394,16 @@ out:
   return l;
 }
 
-/*
- * returns the number of bytes the first (multibyte) character
- * of input consumes:
- * 	< 0 ... conversion error
- * 	= 0 ... end of input
- * 	> 0 ... length (bytes)
+/**
+ * mutt_charlen - Count the bytes in a (multibyte) character
+ * @param[in]  s     String to be examined
+ * @param[out] width Number of screen columns the character would use
+ * @retval n  Number of bytes in the first (multibyte) character of input consumes
+ * @retval <0 Conversion error
+ * @retval =0 End of input
+ * @retval >0 Length (bytes)
  */
-int mutt_charlen (const char *s, int *width)
+int mutt_charlen(const char *s, int *width)
 {
   wchar_t wc;
   mbstate_t mbstate;
@@ -1253,34 +1412,36 @@ int mutt_charlen (const char *s, int *width)
   if (!s || !*s)
     return 0;
 
-  n = mutt_strlen (s);
-  memset (&mbstate, 0, sizeof (mbstate));
-  k = mbrtowc (&wc, s, n, &mbstate);
+  n = mutt_strlen(s);
+  memset(&mbstate, 0, sizeof(mbstate));
+  k = mbrtowc(&wc, s, n, &mbstate);
   if (width)
-    *width = wcwidth (wc);
+    *width = wcwidth(wc);
   return (k == (size_t)(-1) || k == (size_t)(-2)) ? -1 : k;
 }
 
-/*
- * mutt_strwidth is like mutt_strlen except that it returns the width
- * referring to the number of character cells.
+/**
+ * mutt_strwidth - Measure a string's width in screen cells
+ * @param s String to be measured
+ * @retval n Number of screen cells string would use
  */
-
-int mutt_strwidth (const char *s)
+int mutt_strwidth(const char *s)
 {
   wchar_t wc;
   int w;
   size_t k, n;
   mbstate_t mbstate;
 
-  if (!s) return 0;
+  if (!s)
+    return 0;
 
-  n = mutt_strlen (s);
+  n = mutt_strlen(s);
 
-  memset (&mbstate, 0, sizeof (mbstate));
-  for (w=0; n && (k = mbrtowc (&wc, s, n, &mbstate)); s += k, n -= k)
+  memset(&mbstate, 0, sizeof(mbstate));
+  for (w = 0; n && (k = mbrtowc(&wc, s, n, &mbstate)); s += k, n -= k)
   {
-    if (*s == MUTT_SPECIAL_INDEX) {
+    if (*s == MUTT_SPECIAL_INDEX)
+    {
       s += 2; /* skip the index coloring sequence */
       k = 0;
       continue;
@@ -1289,13 +1450,13 @@ int mutt_strwidth (const char *s)
     if (k == (size_t)(-1) || k == (size_t)(-2))
     {
       if (k == (size_t)(-1))
-        memset (&mbstate, 0, sizeof (mbstate));
+        memset(&mbstate, 0, sizeof(mbstate));
       k = (k == (size_t)(-1)) ? 1 : n;
-      wc = replacement_char ();
+      wc = replacement_char();
     }
-    if (!IsWPrint (wc))
+    if (!IsWPrint(wc))
       wc = '?';
-    w += wcwidth (wc);
+    w += wcwidth(wc);
   }
   return w;
 }

@@ -1,5 +1,3 @@
-# $Id$
-
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 #
 # ME's personal .muttrc (Mutt 0.92.5)
@@ -105,7 +103,7 @@ set tilde			# virtual lines to pad blank lines in the pager
 set nouse_domain		# don't qualify local addresses with $domain
 #set use_from			# always generate the `From:' header field
 set implicit_autoview=yes	# pager shows parts having a mailcap viewer
-set pgp_verify_sig=no		# don't automatically verify message signatures
+set crypt_verify_sig=no		# don't automatically verify message signatures
 #set visual=vim			# editor invoked by ~v in the builtin editor
 #set nowait_key			# prompt when a pipe returns normal status
 set write_inc=25		# show progress while writing mailboxes
@@ -146,7 +144,7 @@ color search default green	# how to hilite search patterns in the pager
 
 color header brightred default ^(From|Subject):
 color body magenta default "(ftp|http|https)://[^ ]+"	# point out URLs
-color body magenta default [-a-z_0-9.]+@[-a-z_0-9.]+	# e-mail addresses
+color body magenta default [-a-z_0-9.\+]+@[-a-z_0-9.]+	# e-mail addresses
 color underline brightgreen default
 
 # attributes when using a mono terminal
@@ -168,7 +166,7 @@ mono quoted bold
 #		generic		generic keymap for all of the above
 #		editor		line editor
 #		pager		text viewer
-#		
+#
 
 bind generic "\e<" first-entry	# emacs-like bindings for moving to top/bottom
 bind generic \e> last-entry

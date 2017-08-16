@@ -1,31 +1,30 @@
-/** @file
- * # NotMuch Support for Mutt
+/**
+ * @file
+ * NotMuch virtual mailbox type
  *
- * ## Authors
- * * Copyright (C) 2011-2016 Karel Zak <kzak@redhat.com>
- * * Copyright (C) 2016-2017 Richard Russon <rich@flatcap.org>
- * * Copyright (C) 2016 Kevin Velghe <kevin@paretje.be>
- * * Copyright (C) 2017 Bernard 'Guyzmo' Pratz <guyzmo+github+pub@m0g.net>
+ * @authors
+ * Copyright (C) 2011-2016 Karel Zak <kzak@redhat.com>
+ * Copyright (C) 2016-2017 Richard Russon <rich@flatcap.org>
+ * Copyright (C) 2016 Kevin Velghe <kevin@paretje.be>
+ * Copyright (C) 2017 Bernard 'Guyzmo' Pratz <guyzmo+github+pub@m0g.net>
  *
- * ## License
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the Free
- * Software Foundation; either version 2 of the License, or (at your option)
- * any later version.
+ * @copyright
+ * This program is free software: you can redistribute it and/or modify it under
+ * the terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 2 of the License, or (at your option) any later
+ * version.
  *
  * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+ * FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+ * details.
  *
  * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc., 59 Temple
- * Place - Suite 330, Boston, MA  02111, USA.
+ * this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  * ## Notes
  *
- * - notmuch uses private CONTEXT->data and private HEADER->data
+ * - notmuch uses private Context->data and private Header->data
  *
  * - all exported functions are usable within notmuch context only
  *
@@ -36,33 +35,31 @@
  *   (or parse URI from another resource)
  */
 
-#if HAVE_CONFIG_H
 #include "config.h"
-#endif
-
 #include <ctype.h>
-#include <dirent.h>
 #include <errno.h>
-#include <fcntl.h>
+#include <limits.h>
 #include <notmuch.h>
 #include <stdbool.h>
-#include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
-#include <sys/file.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
-#include <utime.h>
-
 #include "mutt.h"
+#include "mutt_notmuch.h"
+#include "body.h"
 #include "buffy.h"
-#include "copy.h"
-#include "keymap.h"
+#include "context.h"
+#include "envelope.h"
+#include "globals.h"
+#include "header.h"
+#include "lib/lib.h"
 #include "mailbox.h"
 #include "mutt_curses.h"
-#include "mutt_notmuch.h"
 #include "mx.h"
-#include "rfc2047.h"
-#include "sort.h"
+#include "protos.h"
+#include "thread.h"
 #include "url.h"
 
 #ifdef LIBNOTMUCH_CHECK_VERSION
@@ -70,98 +67,97 @@
 #endif
 
 /* @def The definition in <notmuch.h> is broken */
-#define LIBNOTMUCH_CHECK_VERSION(major, minor, micro)                            \
-  (LIBNOTMUCH_MAJOR_VERSION >  (major) ||                                        \
-  (LIBNOTMUCH_MAJOR_VERSION == (major) && LIBNOTMUCH_MINOR_VERSION > (minor)) || \
-  (LIBNOTMUCH_MAJOR_VERSION == (major) && LIBNOTMUCH_MINOR_VERSION == (minor) && \
-   LIBNOTMUCH_MICRO_VERSION >= (micro)))
+#define LIBNOTMUCH_CHECK_VERSION(_major, _minor, _micro)                            \
+  (LIBNOTMUCH_MAJOR_VERSION > (_major) ||                                           \
+   (LIBNOTMUCH_MAJOR_VERSION == (_major) && LIBNOTMUCH_MINOR_VERSION > (_minor)) || \
+   (LIBNOTMUCH_MAJOR_VERSION == (_major) && LIBNOTMUCH_MINOR_VERSION == (_minor) && \
+    LIBNOTMUCH_MICRO_VERSION >= (_micro)))
 
 /**
- * enum anonymous - Query Types
+ * enum NmQueryType - NotMuch Query Types
  *
  * Read whole-thread or matching messages only?
  */
-enum
+enum NmQueryType
 {
-  NM_QUERY_TYPE_MESGS = 1,      /**< Default: Messages only */
-  NM_QUERY_TYPE_THREADS         /**< Whole threads */
+  NM_QUERY_TYPE_MESGS = 1, /**< Default: Messages only */
+  NM_QUERY_TYPE_THREADS    /**< Whole threads */
 };
 
 /**
- * struct uri_tag - Parsed NotMuch-URI arguments
+ * struct UriTag - Parsed NotMuch-URI arguments
  *
  * The arguments in a URI are saved in a linked list.
  *
- * @sa nm_ctxdata#query_items
+ * @sa NmCtxData#query_items
  */
-struct uri_tag
+struct UriTag
 {
   char *name;
   char *value;
-  struct uri_tag *next;
+  struct UriTag *next;
 };
 
 /**
- * nm_hdrtag - NotMuch Mail Header Tags
+ * struct NmHdrTag - NotMuch Mail Header Tags
  *
  * Keep a linked list of header tags and their transformed values.
  * Textual tags can be transformed to symbols to save space.
  *
- * @sa nm_hdrdata#tag_list
+ * @sa NmHdrData#tag_list
  */
-struct nm_hdrtag
+struct NmHdrTag
 {
   char *tag;
   char *transformed;
-  struct nm_hdrtag *next;
+  struct NmHdrTag *next;
 };
 
 /**
- * struct nm_hdrdata - NotMuch data attached to an email
+ * struct NmHdrData - NotMuch data attached to an email
  *
  * This stores all the NotMuch data associated with an email.
  *
- * @sa HEADER#data, MUTT_MBOX
+ * @sa Header#data, MUTT_MBOX
  */
-struct nm_hdrdata
+struct NmHdrData
 {
-  char *folder;                 /**< Location of the email */
+  char *folder; /**< Location of the email */
   char *tags;
   char *tags_transformed;
-  struct nm_hdrtag *tag_list;
+  struct NmHdrTag *tag_list;
   char *oldpath;
-  char *virtual_id;             /**< Unique NotMuch Id */
-  int magic;                    /**< Type of mailbox the email is in */
+  char *virtual_id; /**< Unique NotMuch Id */
+  int magic;        /**< Type of mailbox the email is in */
 };
 
 /**
- * struct nm_ctxdata - NotMuch data attached to a context
+ * struct NmCtxData - NotMuch data attached to a context
  *
  * This stores the global NotMuch data, such as the database connection.
  *
- * @sa CONTEXT#data, NotmuchDBLimit, NM_QUERY_TYPE_MESGS
+ * @sa Context#data, NotmuchDBLimit, NM_QUERY_TYPE_MESGS
  */
-struct nm_ctxdata
+struct NmCtxData
 {
   notmuch_database_t *db;
 
-  char *db_filename;            /**< Filename of the NotMuch database */
-  char *db_query;               /**< Previous query */
-  int db_limit;                 /**< Maximum number of results to return */
-  int query_type;               /**< Messages or Threads */
+  char *db_filename; /**< Filename of the NotMuch database */
+  char *db_query;    /**< Previous query */
+  int db_limit;      /**< Maximum number of results to return */
+  int query_type;    /**< Messages or Threads */
 
-  struct uri_tag *query_items;
+  struct UriTag *query_items;
 
-  progress_t progress;          /**< A progress bar */
+  struct Progress progress; /**< A progress bar */
   int oldmsgcount;
-  int ignmsgcount;              /**< Ignored messages */
+  int ignmsgcount; /**< Ignored messages */
 
-  unsigned int noprogress     : 1;  /**< Don't show the progress bar */
-  unsigned int longrun        : 1;  /**< A long-lived action is in progress */
-  unsigned int trans          : 1;  /**< Atomic transacion in progress */
-  unsigned int progress_ready : 1;  /**< A progress bar has been initialised */
+  bool noprogress : 1;     /**< Don't show the progress bar */
+  bool longrun : 1;        /**< A long-lived action is in progress */
+  bool trans : 1;          /**< Atomic transaction in progress */
+  bool progress_ready : 1; /**< A progress bar has been initialised */
 };
-
 
 #if 0
 /**
@@ -172,14 +168,14 @@ struct nm_ctxdata
  */
 static void debug_print_filenames(notmuch_message_t *msg)
 {
-  notmuch_filenames_t *ls;
+  notmuch_filenames_t *ls = NULL;
   const char *id = notmuch_message_get_message_id(msg);
 
   for (ls = notmuch_message_get_filenames(msg);
        ls && notmuch_filenames_valid(ls);
        notmuch_filenames_move_to_next(ls))
   {
-    dprint(2, (debugfile, "nm: %s: %s\n", id, notmuch_filenames_get(ls)));
+    mutt_debug (2, "nm: %s: %s\n", id, notmuch_filenames_get(ls));
   }
 }
 
@@ -191,14 +187,14 @@ static void debug_print_filenames(notmuch_message_t *msg)
  */
 static void debug_print_tags(notmuch_message_t *msg)
 {
-  notmuch_tags_t *tags;
+  notmuch_tags_t *tags = NULL;
   const char *id = notmuch_message_get_message_id(msg);
 
   for (tags = notmuch_message_get_tags(msg);
        tags && notmuch_tags_valid(tags);
        notmuch_tags_move_to_next(tags))
   {
-    dprint(2, (debugfile, "nm: %s: %s\n", id, notmuch_tags_get(tags)));
+    mutt_debug (2, "nm: %s: %s\n", id, notmuch_tags_get(tags));
   }
 }
 #endif
@@ -206,12 +202,15 @@ static void debug_print_tags(notmuch_message_t *msg)
 /**
  * url_free_tags - Free a list of tags
  * @param tags List of tags
+ *
+ * Tags are stored as a singly-linked list.
+ * Free all the strings and the list, itself.
  */
-static void url_free_tags(struct uri_tag *tags)
+static void url_free_tags(struct UriTag *tags)
 {
   while (tags)
   {
-    struct uri_tag *next = tags->next;
+    struct UriTag *next = tags->next;
     FREE(&tags->name);
     FREE(&tags->value);
     FREE(&tags);
@@ -224,28 +223,27 @@ static void url_free_tags(struct uri_tag *tags)
  * @param[in]  url      URI to parse
  * @param[out] filename Save the filename
  * @param[out] tags     Save the list of tags
- *
- * @retval  0 Success
- * @retval -1 Error: Bad format
+ * @retval true  Success
+ * @retval false Error Bad format
  *
  * Parse a NotMuch URI, such as:
  * *    notmuch:///path/to/db?query=tag:lkml&limit=1000
  * *    notmuch://?query=neomutt
  *
  * Extract the database filename (optional) and any search parameters (tags).
- * The tags will be saved in a linked list (#uri_tag).
+ * The tags will be saved in a linked list (#UriTag).
  */
-static int url_parse_query(const char *url, char **filename, struct uri_tag **tags)
+static bool url_parse_query(const char *url, char **filename, struct UriTag **tags)
 {
   char *p = strstr(url, "://"); /* remote unsupported */
-  char *e;
-  struct uri_tag *tag, *last = NULL;
+  char *e = NULL;
+  struct UriTag *tag, *last = NULL;
 
   *filename = NULL;
   *tags = NULL;
 
   if (!p || !*(p + 3))
-    return -1;
+    return false;
 
   p += 3;
   *filename = p;
@@ -254,7 +252,7 @@ static int url_parse_query(const char *url, char **filename, struct uri_tag **ta
 
   *filename = e ? (e == p) ? NULL : mutt_substrdup(p, e) : safe_strdup(p);
   if (!e)
-    return 0; /* only filename */
+    return true; /* only filename */
 
   if (*filename && (url_pct_decode(*filename) < 0))
     goto err;
@@ -264,9 +262,7 @@ static int url_parse_query(const char *url, char **filename, struct uri_tag **ta
 
   while (p && *p)
   {
-    tag = safe_calloc(1, sizeof(struct uri_tag));
-    if (!tag)
-      goto err;
+    tag = safe_calloc(1, sizeof(struct UriTag));
 
     if (!*tags)
       last = *tags = tag;
@@ -299,16 +295,23 @@ static int url_parse_query(const char *url, char **filename, struct uri_tag **ta
     p = e + 1;
   }
 
-  return 0;
+  return true;
 err:
   FREE(&(*filename));
   url_free_tags(*tags);
-  return -1;
+  return false;
 }
 
-static void free_tag_list(struct nm_hdrtag **tag_list)
+/**
+ * free_tag_list - Free a list of tags
+ * @param tag_list List of tags
+ *
+ * Take a nm_hdrtag struct (a singly-linked list) and free the attached strings
+ * and the list itself.
+ */
+static void free_tag_list(struct NmHdrTag **tag_list)
 {
-  struct nm_hdrtag *tmp;
+  struct NmHdrTag *tmp = NULL;
 
   while ((tmp = *tag_list) != NULL)
   {
@@ -321,12 +324,20 @@ static void free_tag_list(struct nm_hdrtag **tag_list)
   *tag_list = 0;
 }
 
-static void free_hdrdata(struct nm_hdrdata *data)
+/**
+ * free_hdrdata - Free header data attached to an email
+ * @param data Header data
+ *
+ * Each email can have an attached nm_hdrdata struct, which contains things
+ * like the tags (labels).  This function frees all the resources and the
+ * nm_hdrdata struct itself.
+ */
+static void free_hdrdata(struct NmHdrData *data)
 {
   if (!data)
     return;
 
-  dprint(2, (debugfile, "nm: freeing header %p\n", data));
+  mutt_debug(2, "nm: freeing header %p\n", (void *) data);
   FREE(&data->folder);
   FREE(&data->tags);
   FREE(&data->tags_transformed);
@@ -336,12 +347,20 @@ static void free_hdrdata(struct nm_hdrdata *data)
   FREE(&data);
 }
 
-static void free_ctxdata(struct nm_ctxdata *data)
+/**
+ * free_ctxdata - Free data attached to the context
+ * @param data A mailbox CONTEXT
+ *
+ * The nm_ctxdata struct stores global NotMuch data, such as the connection to
+ * the database.  This function will close the database, free the resources and
+ * the struct itself.
+ */
+static void free_ctxdata(struct NmCtxData *data)
 {
   if (!data)
     return;
 
-  dprint(1, (debugfile, "nm: freeing context data %p\n", data));
+  mutt_debug(1, "nm: freeing context data %p\n", (void *) data);
 
   if (data->db)
 #ifdef NOTMUCH_API_3
@@ -357,19 +376,27 @@ static void free_ctxdata(struct nm_ctxdata *data)
   FREE(&data);
 }
 
-static struct nm_ctxdata *new_ctxdata(char *uri)
+/**
+ * new_ctxdata - Create a new nm_ctxdata object from a query
+ * @param uri NotMuch query string
+ * @retval ptr New nm_ctxdata struct
+ *
+ * A new nm_ctxdata struct is created, then the query is parsed and saved
+ * within it.  This should be freed using free_ctxdata().
+ */
+static struct NmCtxData *new_ctxdata(char *uri)
 {
-  struct nm_ctxdata *data;
+  struct NmCtxData *data = NULL;
 
   if (!uri)
     return NULL;
 
-  data = safe_calloc(1, sizeof(struct nm_ctxdata));
-  dprint(1, (debugfile, "nm: initialize context data %p\n", data));
+  data = safe_calloc(1, sizeof(struct NmCtxData));
+  mutt_debug(1, "nm: initialize context data %p\n", (void *) data);
 
   data->db_limit = NotmuchDBLimit;
 
-  if (url_parse_query(uri, &data->db_filename, &data->query_items))
+  if (!url_parse_query(uri, &data->db_filename, &data->query_items))
   {
     mutt_error(_("failed to parse notmuch uri: %s"), uri);
     FREE(&data);
@@ -379,7 +406,17 @@ static struct nm_ctxdata *new_ctxdata(char *uri)
   return data;
 }
 
-static int init_context(CONTEXT *ctx)
+/**
+ * init_context - Add NotMuch data to the Context
+ * @param ctx A mailbox CONTEXT
+ * @retval  0 Success
+ * @retval -1 Error Bad format
+ *
+ * Create a new nm_ctxdata struct and add it CONTEXT::data.
+ * NotMuch-specific data will be stored in this struct.
+ * This struct can be freed using free_hdrdata().
+ */
+static int init_context(struct Context *ctx)
 {
   if (!ctx || (ctx->magic != MUTT_NOTMUCH))
     return -1;
@@ -394,19 +431,18 @@ static int init_context(CONTEXT *ctx)
   return 0;
 }
 
-static char *header_get_id(HEADER *h)
+static char *header_get_id(struct Header *h)
 {
-  return (h && h->data) ? ((struct nm_hdrdata *) h->data)->virtual_id : NULL;
+  return (h && h->data) ? ((struct NmHdrData *) h->data)->virtual_id : NULL;
 }
 
-static char *header_get_fullpath(HEADER *h, char *buf, size_t bufsz)
+static char *header_get_fullpath(struct Header *h, char *buf, size_t bufsz)
 {
   snprintf(buf, bufsz, "%s/%s", nm_header_get_folder(h), h->path);
-  /*dprint(2, (debugfile, "nm: returns fullpath '%s'\n", buf));*/
   return buf;
 }
 
-static struct nm_ctxdata *get_ctxdata(CONTEXT *ctx)
+static struct NmCtxData *get_ctxdata(struct Context *ctx)
 {
   if (ctx && (ctx->magic == MUTT_NOTMUCH))
     return ctx->data;
@@ -433,28 +469,24 @@ static int string_to_query_type(const char *str)
 /**
  * query_window_check_timebase - Checks if a given timebase string is valid
  * @param[in] timebase: string containing a time base
+ * @retval true if the given time base is valid
  *
- * @return true if the given time base is valid
- *
- * this function returns whether a given timebase string is valid or not,
+ * This function returns whether a given timebase string is valid or not,
  * which is used to validate the user settable configuration setting:
  *
  *     nm_query_window_timebase
- *
  */
 static bool query_window_check_timebase(const char *timebase)
 {
-  if ((strcmp(timebase, "hour")  == 0) ||
-      (strcmp(timebase, "day")   == 0) ||
-      (strcmp(timebase, "week")  == 0) ||
-      (strcmp(timebase, "month") == 0) ||
-      (strcmp(timebase, "year")  == 0))
+  if ((strcmp(timebase, "hour") == 0) || (strcmp(timebase, "day") == 0) ||
+      (strcmp(timebase, "week") == 0) || (strcmp(timebase, "month") == 0) ||
+      (strcmp(timebase, "year") == 0))
     return true;
   return false;
 }
 
 /**
- * query_window_reset - restores vfolder's search window to its original position
+ * query_window_reset - Restore vfolder's search window to its original position
  *
  * After moving a vfolder search window backward and forward, calling this function
  * will reset the search position to its original value, setting to 0 the user settable
@@ -464,7 +496,7 @@ static bool query_window_check_timebase(const char *timebase)
  */
 static void query_window_reset(void)
 {
-  dprint(2, (debugfile, "query_window_reset ()\n"));
+  mutt_debug(2, "query_window_reset ()\n");
   NotmuchQueryWindowCurrentPosition = 0;
 }
 
@@ -473,9 +505,8 @@ static void query_window_reset(void)
  * @param[in]  query vfolder search string
  * @param[out] buf   allocated string buffer to receive the modified search query
  * @param[in]  bufsz allocated maximum size of the buf string buffer
- *
- * @return boolean value set to true if a transformed search query is available as
- *  a string in buf, otherwise if the search query shall not be transformed.
+ * @retval true  Transformed search query is available as a string in buf
+ * @retval false Search query shall not be transformed
  *
  * This is where the magic of windowed queries happens. Taking a vfolder search
  * query string as parameter, it will use the following two user settings:
@@ -509,39 +540,39 @@ static void query_window_reset(void)
  */
 static bool windowed_query_from_query(const char *query, char *buf, size_t bufsz)
 {
-  dprint(2, (debugfile, "nm: windowed_query_from_query (%s)\n", query));
+  mutt_debug(2, "nm: windowed_query_from_query (%s)\n", query);
 
   int beg = NotmuchQueryWindowDuration * (NotmuchQueryWindowCurrentPosition + 1);
-  int end = NotmuchQueryWindowDuration *  NotmuchQueryWindowCurrentPosition;
+  int end = NotmuchQueryWindowDuration * NotmuchQueryWindowCurrentPosition;
 
-  // if the duration is a non positive integer, disable the window
+  /* if the duration is a non positive integer, disable the window */
   if (NotmuchQueryWindowDuration <= 0)
   {
     query_window_reset();
     return false;
   }
 
-  // if the query has changed, reset the window position
+  /* if the query has changed, reset the window position */
   if (NotmuchQueryWindowCurrentSearch == NULL ||
-      strcmp(query, NotmuchQueryWindowCurrentSearch) != 0)
+      (strcmp(query, NotmuchQueryWindowCurrentSearch) != 0))
     query_window_reset();
 
-  //
   if (!query_window_check_timebase(NotmuchQueryWindowTimebase))
   {
-    mutt_message (_("Invalid nm_query_window_timebase value (valid values are: hour, day, week, month or year)."));
-    dprint(2, (debugfile, "Invalid nm_query_window_timebase value\n"));
+    mutt_message(_("Invalid nm_query_window_timebase value (valid values are: "
+                   "hour, day, week, month or year)."));
+    mutt_debug(2, "Invalid nm_query_window_timebase value\n");
     return false;
   }
 
   if (end == 0)
-    snprintf(buf, bufsz, "date:%d%s..now and %s",
-        beg, NotmuchQueryWindowTimebase, NotmuchQueryWindowCurrentSearch);
+    snprintf(buf, bufsz, "date:%d%s..now and %s", beg,
+             NotmuchQueryWindowTimebase, NotmuchQueryWindowCurrentSearch);
   else
-    snprintf(buf, bufsz, "date:%d%s..%d%s and %s",
-        beg, NotmuchQueryWindowTimebase, end, NotmuchQueryWindowTimebase, NotmuchQueryWindowCurrentSearch);
+    snprintf(buf, bufsz, "date:%d%s..%d%s and %s", beg, NotmuchQueryWindowTimebase,
+             end, NotmuchQueryWindowTimebase, NotmuchQueryWindowCurrentSearch);
 
-  dprint(2, (debugfile, "nm: windowed_query_from_query (%s) -> %s\n", query, buf));
+  mutt_debug(2, "nm: windowed_query_from_query (%s) -> %s\n", query, buf);
 
   return true;
 }
@@ -550,9 +581,8 @@ static bool windowed_query_from_query(const char *query, char *buf, size_t bufsz
  * get_query_string - builds the notmuch vfolder search string
  * @param data   internal notmuch context
  * @param window if true enable application of the window on the search string
- *
- * @return string containing a notmuch search query, or a NULL pointer
- * if none can be generated.
+ * @retval string Containing a notmuch search query
+ * @retval NULL   If none can be generated
  *
  * This function parses the internal representation of a search, and returns
  * a search query string ready to be fed to the notmuch API, given the search
@@ -563,11 +593,11 @@ static bool windowed_query_from_query(const char *query, char *buf, size_t bufsz
  * result in buffy) or not (for the count in the sidebar). It is not aimed at
  * enabling/disabling the feature.
  */
-static char *get_query_string(struct nm_ctxdata *data, int window)
+static char *get_query_string(struct NmCtxData *data, int window)
 {
-  dprint(2, (debugfile, "nm: get_query_string(%d)\n", window));
+  mutt_debug(2, "nm: get_query_string(%d)\n", window);
 
-  struct uri_tag *item;
+  struct UriTag *item = NULL;
 
   if (!data)
     return NULL;
@@ -591,6 +621,9 @@ static char *get_query_string(struct nm_ctxdata *data, int window)
       data->db_query = safe_strdup(item->value);
   }
 
+  if (!data->db_query)
+    return NULL;
+
   if (!data->query_type)
     data->query_type = string_to_query_type(NULL);
 
@@ -599,34 +632,35 @@ static char *get_query_string(struct nm_ctxdata *data, int window)
     char buf[LONG_STRING];
     mutt_str_replace(&NotmuchQueryWindowCurrentSearch, data->db_query);
 
-    // if a date part is defined, do not apply windows (to avoid the risk of
-    // having a non-intersected date frame). A good improvement would be to
-    // accept if they intersect
+    /* if a date part is defined, do not apply windows (to avoid the risk of
+     * having a non-intersected date frame). A good improvement would be to
+     * accept if they intersect
+     */
     if (!strstr(data->db_query, "date:") &&
         windowed_query_from_query(data->db_query, buf, sizeof(buf)))
       data->db_query = safe_strdup(buf);
 
-    dprint(2, (debugfile, "nm: query (windowed) '%s'\n", data->db_query));
+    mutt_debug(2, "nm: query (windowed) '%s'\n", data->db_query);
   }
   else
-    dprint(2, (debugfile, "nm: query '%s'\n", data->db_query));
+    mutt_debug(2, "nm: query '%s'\n", data->db_query);
 
   return data->db_query;
 }
 
-static int get_limit(struct nm_ctxdata *data)
+static int get_limit(struct NmCtxData *data)
 {
   return data ? data->db_limit : 0;
 }
 
-static int get_query_type(struct nm_ctxdata *data)
+static int get_query_type(struct NmCtxData *data)
 {
   return (data && data->query_type) ? data->query_type : string_to_query_type(NULL);
 }
 
-static const char *get_db_filename(struct nm_ctxdata *data)
+static const char *get_db_filename(struct NmCtxData *data)
 {
-  char *db_filename;
+  char *db_filename = NULL;
 
   if (!data)
     return NULL;
@@ -639,30 +673,27 @@ static const char *get_db_filename(struct nm_ctxdata *data)
   if (strncmp(db_filename, "notmuch://", 10) == 0)
     db_filename += 10;
 
-  dprint(2, (debugfile, "nm: db filename '%s'\n", db_filename));
+  mutt_debug(2, "nm: db filename '%s'\n", db_filename);
   return db_filename;
 }
 
-static notmuch_database_t *do_database_open(const char *filename, int writable,
-                                            int verbose)
+static notmuch_database_t *do_database_open(const char *filename, int writable, int verbose)
 {
   notmuch_database_t *db = NULL;
   int ct = 0;
   notmuch_status_t st = NOTMUCH_STATUS_SUCCESS;
 
-  dprint(1, (debugfile, "nm: db open '%s' %s (timeout %d)\n", filename,
-             writable ? "[WRITE]" : "[READ]", NotmuchOpenTimeout));
+  mutt_debug(1, "nm: db open '%s' %s (timeout %d)\n", filename,
+             writable ? "[WRITE]" : "[READ]", NotmuchOpenTimeout);
   do
   {
 #ifdef NOTMUCH_API_3
-    st = notmuch_database_open(filename,
-                               writable ? NOTMUCH_DATABASE_MODE_READ_WRITE :
-                                          NOTMUCH_DATABASE_MODE_READ_ONLY,
+    st = notmuch_database_open(filename, writable ? NOTMUCH_DATABASE_MODE_READ_WRITE : NOTMUCH_DATABASE_MODE_READ_ONLY,
                                &db);
 #else
-    db = notmuch_database_open(filename, writable ?
-                                             NOTMUCH_DATABASE_MODE_READ_WRITE :
-                                             NOTMUCH_DATABASE_MODE_READ_ONLY);
+    db = notmuch_database_open(filename,
+                               writable ? NOTMUCH_DATABASE_MODE_READ_WRITE :
+                                          NOTMUCH_DATABASE_MODE_READ_ONLY);
 #endif
     if (db || !NotmuchOpenTimeout || ((ct / 2) > NotmuchOpenTimeout))
       break;
@@ -671,7 +702,7 @@ static notmuch_database_t *do_database_open(const char *filename, int writable,
       mutt_error(_("Waiting for notmuch DB... (%d sec)"), ct / 2);
     usleep(500000);
     ct++;
-  } while (1);
+  } while (true);
 
   if (verbose)
   {
@@ -684,7 +715,7 @@ static notmuch_database_t *do_database_open(const char *filename, int writable,
   return db;
 }
 
-static notmuch_database_t *get_db(struct nm_ctxdata *data, int writable)
+static notmuch_database_t *get_db(struct NmCtxData *data, int writable)
 {
   if (!data)
     return NULL;
@@ -698,50 +729,57 @@ static notmuch_database_t *get_db(struct nm_ctxdata *data, int writable)
   return data->db;
 }
 
-static int release_db(struct nm_ctxdata *data)
+static int release_db(struct NmCtxData *data)
 {
   if (data && data->db)
   {
-    dprint(1, (debugfile, "nm: db close\n"));
+    mutt_debug(1, "nm: db close\n");
 #ifdef NOTMUCH_API_3
     notmuch_database_destroy(data->db);
 #else
     notmuch_database_close(data->db);
 #endif
     data->db = NULL;
-    data->longrun = 0;
+    data->longrun = false;
     return 0;
   }
 
   return -1;
 }
 
-static int db_trans_begin(struct nm_ctxdata *data)
+/**
+ * db_trans_begin - Start a NotMuch database transaction
+ * @param data Header data
+ * @retval <0 error
+ * @retval 1  new transaction started
+ * @retval 0  already within transaction
+ */
+static int db_trans_begin(struct NmCtxData *data)
 {
   if (!data || !data->db)
     return -1;
 
   if (!data->trans)
   {
-    dprint(2, (debugfile, "nm: db trans start\n"));
+    mutt_debug(2, "nm: db trans start\n");
     if (notmuch_database_begin_atomic(data->db))
       return -1;
-    data->trans = 1;
+    data->trans = true;
     return 1;
   }
 
   return 0;
 }
 
-static int db_trans_end(struct nm_ctxdata *data)
+static int db_trans_end(struct NmCtxData *data)
 {
   if (!data || !data->db)
     return -1;
 
   if (data->trans)
   {
-    dprint(2, (debugfile, "nm: db trans end\n"));
-    data->trans = 0;
+    mutt_debug(2, "nm: db trans end\n");
+    data->trans = false;
     if (notmuch_database_end_atomic(data->db))
       return -1;
   }
@@ -749,12 +787,27 @@ static int db_trans_end(struct nm_ctxdata *data)
   return 0;
 }
 
-static int is_longrun(struct nm_ctxdata *data)
+/**
+ * is_longrun - Is NotMuch in the middle of a long-running transaction
+ * @param data Header data
+ * @retval true if it is
+ */
+static int is_longrun(struct NmCtxData *data)
 {
   return data && data->longrun;
 }
 
-static int get_database_mtime(struct nm_ctxdata *data, time_t *mtime)
+/**
+ * get_database_mtime - Get the database modification time
+ * @param[in]  data  Struct holding database info
+ * @param[out] mtime Save the modification time
+ * @retval  0 Success (result in mtime)
+ * @retval -1 Error
+ *
+ * Get the "mtime" (modification time) of the database file.
+ * This is the time of the last update.
+ */
+static int get_database_mtime(struct NmCtxData *data, time_t *mtime)
 {
   char path[_POSIX_PATH_MAX];
   struct stat st;
@@ -763,7 +816,7 @@ static int get_database_mtime(struct nm_ctxdata *data, time_t *mtime)
     return -1;
 
   snprintf(path, sizeof(path), "%s/.notmuch/xapian", get_db_filename(data));
-  dprint(2, (debugfile, "nm: checking '%s' mtime\n", path));
+  mutt_debug(2, "nm: checking '%s' mtime\n", path);
 
   if (stat(path, &st))
     return -1;
@@ -776,7 +829,7 @@ static int get_database_mtime(struct nm_ctxdata *data, time_t *mtime)
 
 static void apply_exclude_tags(notmuch_query_t *query)
 {
-  char *buf, *p, *end = NULL, *tag = NULL;
+  char *buf = NULL, *p = NULL, *end = NULL, *tag = NULL;
 
   if (!NotmuchExcludeTags || !*NotmuchExcludeTags)
     return;
@@ -798,7 +851,7 @@ static void apply_exclude_tags(notmuch_query_t *query)
       break;
     *end = '\0';
 
-    dprint(2, (debugfile, "nm: query exclude tag '%s'\n", tag));
+    mutt_debug(2, "nm: query exclude tag '%s'\n", tag);
     notmuch_query_add_tag_exclude(query, tag);
     end = tag = NULL;
   }
@@ -806,11 +859,11 @@ static void apply_exclude_tags(notmuch_query_t *query)
   FREE(&buf);
 }
 
-static notmuch_query_t *get_query(struct nm_ctxdata *data, int writable)
+static notmuch_query_t *get_query(struct NmCtxData *data, int writable)
 {
   notmuch_database_t *db = NULL;
   notmuch_query_t *q = NULL;
-  const char *str;
+  const char *str = NULL;
 
   if (!data)
     return NULL;
@@ -827,7 +880,7 @@ static notmuch_query_t *get_query(struct nm_ctxdata *data, int writable)
 
   apply_exclude_tags(q);
   notmuch_query_set_sort(q, NOTMUCH_SORT_NEWEST_FIRST);
-  dprint(2, (debugfile, "nm: query successfully initialized (%s)\n", str));
+  mutt_debug(2, "nm: query successfully initialized (%s)\n", str);
   return q;
 err:
   if (!is_longrun(data))
@@ -837,7 +890,7 @@ err:
 
 static void append_str_item(char **str, const char *item, int sep)
 {
-  char *p;
+  char *p = NULL;
   size_t sz = strlen(item);
   size_t ssz = *str ? strlen(*str) : 0;
 
@@ -848,14 +901,14 @@ static void append_str_item(char **str, const char *item, int sep)
   memcpy(p, item, sz + 1);
 }
 
-static int update_header_tags(HEADER *h, notmuch_message_t *msg)
+static int update_header_tags(struct Header *h, notmuch_message_t *msg)
 {
-  struct nm_hdrdata *data = h->data;
-  notmuch_tags_t *tags;
+  struct NmHdrData *data = h->data;
+  notmuch_tags_t *tags = NULL;
   char *tstr = NULL, *ttstr = NULL;
-  struct nm_hdrtag *tag_list = NULL, *tmp;
+  struct NmHdrTag *tag_list = NULL, *tmp = NULL;
 
-  dprint(2, (debugfile, "nm: tags update requested (%s)\n", data->virtual_id));
+  mutt_debug(2, "nm: tags update requested (%s)\n", data->virtual_id);
 
   for (tags = notmuch_message_get_tags(msg); tags && notmuch_tags_valid(tags);
        notmuch_tags_move_to_next(tags))
@@ -883,12 +936,8 @@ static int update_header_tags(HEADER *h, notmuch_message_t *msg)
       char *p = strstr(NotmuchHiddenTags, t);
       size_t xsz = p ? strlen(t) : 0;
 
-      if (p && ((p == NotmuchHiddenTags)
-                  || (*(p - 1) == ',')
-                  || (*(p - 1) == ' '))
-                && ((*(p + xsz) == '\0')
-                  || (*(p + xsz) == ',')
-                  || (*(p + xsz) == ' ')))
+      if (p && ((p == NotmuchHiddenTags) || (*(p - 1) == ',') || (*(p - 1) == ' ')) &&
+          ((*(p + xsz) == '\0') || (*(p + xsz) == ',') || (*(p + xsz) == ' ')))
         continue;
     }
 
@@ -906,7 +955,7 @@ static int update_header_tags(HEADER *h, notmuch_message_t *msg)
   {
     FREE(&tstr);
     FREE(&ttstr);
-    dprint(2, (debugfile, "nm: tags unchanged\n"));
+    mutt_debug(2, "nm: tags unchanged\n");
     return 1;
   }
 
@@ -916,26 +965,24 @@ static int update_header_tags(HEADER *h, notmuch_message_t *msg)
 
   /* new version */
   data->tags = tstr;
-  dprint(2, (debugfile, "nm: new tags: '%s'\n", tstr));
+  mutt_debug(2, "nm: new tags: '%s'\n", tstr);
 
   data->tags_transformed = ttstr;
-  dprint(2, (debugfile, "nm: new tag transforms: '%s'\n", ttstr));
+  mutt_debug(2, "nm: new tag transforms: '%s'\n", ttstr);
 
   return 0;
 }
 
-static int update_message_path(HEADER *h, const char *path)
+static int update_message_path(struct Header *h, const char *path)
 {
-  struct nm_hdrdata *data = h->data;
-  char *p;
+  struct NmHdrData *data = h->data;
+  char *p = NULL;
 
-  dprint(2, (debugfile, "nm: path update requested path=%s, (%s)\n", path,
-             data->virtual_id));
+  mutt_debug(2, "nm: path update requested path=%s, (%s)\n", path, data->virtual_id);
 
   p = strrchr(path, '/');
   if (p && ((p - path) > 3) &&
-      ((strncmp(p - 3, "cur", 3) == 0) ||
-       (strncmp(p - 3, "new", 3) == 0) ||
+      ((strncmp(p - 3, "cur", 3) == 0) || (strncmp(p - 3, "new", 3) == 0) ||
        (strncmp(p - 3, "tmp", 3) == 0)))
   {
     data->magic = MUTT_MAILDIR;
@@ -951,7 +998,7 @@ static int update_message_path(HEADER *h, const char *path)
 
     data->folder = mutt_substrdup(path, p);
 
-    dprint(2, (debugfile, "nm: folder='%s', file='%s'\n", data->folder, h->path));
+    mutt_debug(2, "nm: folder='%s', file='%s'\n", data->folder, h->path);
     return 0;
   }
 
@@ -963,8 +1010,7 @@ static char *get_folder_from_path(const char *path)
   char *p = strrchr(path, '/');
 
   if (p && ((p - path) > 3) &&
-      ((strncmp(p - 3, "cur", 3) == 0) ||
-       (strncmp(p - 3, "new", 3) == 0) ||
+      ((strncmp(p - 3, "cur", 3) == 0) || (strncmp(p - 3, "new", 3) == 0) ||
        (strncmp(p - 3, "tmp", 3) == 0)))
   {
     p -= 3;
@@ -977,7 +1023,7 @@ static char *get_folder_from_path(const char *path)
   return NULL;
 }
 
-static void deinit_header(HEADER *h)
+static void deinit_header(struct Header *h)
 {
   if (h)
   {
@@ -986,10 +1032,17 @@ static void deinit_header(HEADER *h)
   }
 }
 
+/**
+ * nm2mutt_message_id - converts notmuch message Id to mutt message Id
+ * @param id NotMuch ID to convert
+ * @retval string Mutt message ID
+ *
+ * Caller must free the Mutt Message ID
+ */
 static char *nm2mutt_message_id(const char *id)
 {
   size_t sz;
-  char *mid;
+  char *mid = NULL;
 
   if (!id)
     return NULL;
@@ -1000,26 +1053,26 @@ static char *nm2mutt_message_id(const char *id)
   return mid;
 }
 
-static int init_header(HEADER *h, const char *path, notmuch_message_t *msg)
+static int init_header(struct Header *h, const char *path, notmuch_message_t *msg)
 {
-  const char *id;
+  const char *id = NULL;
 
   if (h->data)
     return 0;
 
   id = notmuch_message_get_message_id(msg);
 
-  h->data = safe_calloc(1, sizeof(struct nm_hdrdata));
+  h->data = safe_calloc(1, sizeof(struct NmHdrData));
   h->free_cb = deinit_header;
 
   /*
    * Notmuch ensures that message Id exists (if not notmuch Notmuch will
-   * generate an ID), so it's more safe than use mutt HEADER->env->id
+   * generate an ID), so it's more safe than use mutt Header->env->id
    */
-  ((struct nm_hdrdata *) h->data)->virtual_id = safe_strdup(id);
+  ((struct NmHdrData *) h->data)->virtual_id = safe_strdup(id);
 
-  dprint(2, (debugfile, "nm: initialize header data: [hdr=%p, data=%p] (%s)\n",
-             h, h->data, id));
+  mutt_debug(2, "nm: initialize header data: [hdr=%p, data=%p] (%s)\n",
+             (void *) h, (void *) h->data, id);
 
   if (!h->env->message_id)
     h->env->message_id = nm2mutt_message_id(id);
@@ -1034,7 +1087,7 @@ static int init_header(HEADER *h, const char *path, notmuch_message_t *msg)
 
 static const char *get_message_last_filename(notmuch_message_t *msg)
 {
-  notmuch_filenames_t *ls;
+  notmuch_filenames_t *ls = NULL;
   const char *name = NULL;
 
   for (ls = notmuch_message_get_filenames(msg);
@@ -1046,9 +1099,9 @@ static const char *get_message_last_filename(notmuch_message_t *msg)
   return name;
 }
 
-static void progress_reset(CONTEXT *ctx)
+static void progress_reset(struct Context *ctx)
 {
-  struct nm_ctxdata *data;
+  struct NmCtxData *data = NULL;
 
   if (ctx->quiet)
     return;
@@ -1060,13 +1113,13 @@ static void progress_reset(CONTEXT *ctx)
   memset(&data->progress, 0, sizeof(data->progress));
   data->oldmsgcount = ctx->msgcount;
   data->ignmsgcount = 0;
-  data->noprogress = 0;
-  data->progress_ready = 0;
+  data->noprogress = false;
+  data->progress_ready = false;
 }
 
-static void progress_update(CONTEXT *ctx, notmuch_query_t *q)
+static void progress_update(struct Context *ctx, notmuch_query_t *q)
 {
-  struct nm_ctxdata *data = get_ctxdata(ctx);
+  struct NmCtxData *data = get_ctxdata(ctx);
 
   if (ctx->quiet || !data || data->noprogress)
     return;
@@ -1077,27 +1130,26 @@ static void progress_update(CONTEXT *ctx, notmuch_query_t *q)
     static char msg[STRING];
     snprintf(msg, sizeof(msg), _("Reading messages..."));
 
-#if LIBNOTMUCH_CHECK_VERSION(4,3,0)
+#if LIBNOTMUCH_CHECK_VERSION(4, 3, 0)
     if (notmuch_query_count_messages_st(q, &count) != NOTMUCH_STATUS_SUCCESS)
       count = 0; /* may not be defined on error */
 #else
     count = notmuch_query_count_messages(q);
 #endif
     mutt_progress_init(&data->progress, msg, MUTT_PROGRESS_MSG, ReadInc, count);
-    data->progress_ready = 1;
+    data->progress_ready = true;
   }
 
   if (data->progress_ready)
     mutt_progress_update(&data->progress,
-                         ctx->msgcount + data->ignmsgcount - data->oldmsgcount,
-                         -1);
+                         ctx->msgcount + data->ignmsgcount - data->oldmsgcount, -1);
 }
 
-static HEADER *get_mutt_header(CONTEXT *ctx, notmuch_message_t *msg)
+static struct Header *get_mutt_header(struct Context *ctx, notmuch_message_t *msg)
 {
-  char *mid;
-  const char *id;
-  HEADER *h;
+  char *mid = NULL;
+  const char *id = NULL;
+  struct Header *h = NULL;
 
   if (!ctx || !msg)
     return NULL;
@@ -1106,32 +1158,32 @@ static HEADER *get_mutt_header(CONTEXT *ctx, notmuch_message_t *msg)
   if (!id)
     return NULL;
 
-  dprint(2, (debugfile, "nm: mutt header, id='%s'\n", id));
+  mutt_debug(2, "nm: mutt header, id='%s'\n", id);
 
   if (!ctx->id_hash)
   {
-    dprint(2, (debugfile, "nm: init hash\n"));
+    mutt_debug(2, "nm: init hash\n");
     ctx->id_hash = mutt_make_id_hash(ctx);
     if (!ctx->id_hash)
       return NULL;
   }
 
   mid = nm2mutt_message_id(id);
-  dprint(2, (debugfile, "nm: mutt id='%s'\n", mid));
+  mutt_debug(2, "nm: mutt id='%s'\n", mid);
 
   h = hash_find(ctx->id_hash, mid);
   FREE(&mid);
   return h;
 }
 
-static void append_message(CONTEXT *ctx, notmuch_query_t *q,
+static void append_message(struct Context *ctx, notmuch_query_t *q,
                            notmuch_message_t *msg, int dedup)
 {
   char *newpath = NULL;
-  const char *path;
-  HEADER *h = NULL;
+  const char *path = NULL;
+  struct Header *h = NULL;
 
-  struct nm_ctxdata *data = get_ctxdata(ctx);
+  struct NmCtxData *data = get_ctxdata(ctx);
   if (!data)
     return;
 
@@ -1140,8 +1192,8 @@ static void append_message(CONTEXT *ctx, notmuch_query_t *q,
   {
     data->ignmsgcount++;
     progress_update(ctx, q);
-    dprint(2, (debugfile, "nm: ignore id=%s, already in the context\n",
-               notmuch_message_get_message_id(msg)));
+    mutt_debug(2, "nm: ignore id=%s, already in the context\n",
+               notmuch_message_get_message_id(msg));
     return;
   }
 
@@ -1149,12 +1201,12 @@ static void append_message(CONTEXT *ctx, notmuch_query_t *q,
   if (!path)
     return;
 
-  dprint(2, (debugfile, "nm: appending message, i=%d, id=%s, path=%s\n",
-             ctx->msgcount, notmuch_message_get_message_id(msg), path));
+  mutt_debug(2, "nm: appending message, i=%d, id=%s, path=%s\n", ctx->msgcount,
+             notmuch_message_get_message_id(msg), path);
 
   if (ctx->msgcount >= ctx->hdrmax)
   {
-    dprint(2, (debugfile, "nm: allocate mx memory\n"));
+    mutt_debug(2, "nm: allocate mx memory\n");
     mx_alloc_memory(ctx);
   }
   if (access(path, F_OK) == 0)
@@ -1172,7 +1224,7 @@ static void append_message(CONTEXT *ctx, notmuch_query_t *q,
         h = maildir_parse_stream(MUTT_MAILDIR, f, newpath, 0, NULL);
         fclose(f);
 
-        dprint(1, (debugfile, "nm: not up-to-date: %s -> %s\n", path, newpath));
+        mutt_debug(1, "nm: not up-to-date: %s -> %s\n", path, newpath);
       }
     }
     FREE(&folder);
@@ -1180,17 +1232,17 @@ static void append_message(CONTEXT *ctx, notmuch_query_t *q,
 
   if (!h)
   {
-    dprint(1, (debugfile, "nm: failed to parse message: %s\n", path));
+    mutt_debug(1, "nm: failed to parse message: %s\n", path);
     goto done;
   }
   if (init_header(h, newpath ? newpath : path, msg) != 0)
   {
     mutt_free_header(&h);
-    dprint(1, (debugfile, "nm: failed to append header!\n"));
+    mutt_debug(1, "nm: failed to append header!\n");
     goto done;
   }
 
-  h->active = 1;
+  h->active = true;
   h->index = ctx->msgcount;
   ctx->size += h->content->length + h->content->offset - h->content->hdr_offset;
   ctx->hdrs[ctx->msgcount] = h;
@@ -1199,11 +1251,11 @@ static void append_message(CONTEXT *ctx, notmuch_query_t *q,
   if (newpath)
   {
     /* remember that file has been moved -- nm_sync_mailbox() will update the DB */
-    struct nm_hdrdata *hd = (struct nm_hdrdata *) h->data;
+    struct NmHdrData *hd = (struct NmHdrData *) h->data;
 
     if (hd)
     {
-      dprint(1, (debugfile, "nm: remember obsolete path: %s\n", path));
+      mutt_debug(1, "nm: remember obsolete path: %s\n", path);
       hd->oldpath = safe_strdup(path);
     }
   }
@@ -1212,10 +1264,15 @@ done:
   FREE(&newpath);
 }
 
-static void append_replies(CONTEXT *ctx, notmuch_query_t *q,
+/**
+ * append_replies - add all the replies to a given messages into the display
+ *
+ * Careful, this calls itself recursively to make sure we get everything.
+ */
+static void append_replies(struct Context *ctx, notmuch_query_t *q,
                            notmuch_message_t *top, int dedup)
 {
-  notmuch_messages_t *msgs;
+  notmuch_messages_t *msgs = NULL;
 
   for (msgs = notmuch_message_get_replies(top); notmuch_messages_valid(msgs);
        notmuch_messages_move_to_next(msgs))
@@ -1228,10 +1285,16 @@ static void append_replies(CONTEXT *ctx, notmuch_query_t *q,
   }
 }
 
-static void append_thread(CONTEXT *ctx, notmuch_query_t *q,
+/**
+ * append_thread - add each top level reply in the thread
+ *
+ * add each top level reply in the thread, and then add each reply to the top
+ * level replies
+ */
+static void append_thread(struct Context *ctx, notmuch_query_t *q,
                           notmuch_thread_t *thread, int dedup)
 {
-  notmuch_messages_t *msgs;
+  notmuch_messages_t *msgs = NULL;
 
   for (msgs = notmuch_thread_get_toplevel_messages(thread);
        notmuch_messages_valid(msgs); notmuch_messages_move_to_next(msgs))
@@ -1243,18 +1306,18 @@ static void append_thread(CONTEXT *ctx, notmuch_query_t *q,
   }
 }
 
-static bool read_mesgs_query(CONTEXT *ctx, notmuch_query_t *q, int dedup)
+static bool read_mesgs_query(struct Context *ctx, notmuch_query_t *q, int dedup)
 {
-  struct nm_ctxdata *data = get_ctxdata(ctx);
+  struct NmCtxData *data = get_ctxdata(ctx);
   int limit;
-  notmuch_messages_t *msgs;
+  notmuch_messages_t *msgs = NULL;
 
   if (!data)
     return false;
 
   limit = get_limit(data);
 
-#if LIBNOTMUCH_CHECK_VERSION(4,3,0)
+#if LIBNOTMUCH_CHECK_VERSION(4, 3, 0)
   if (notmuch_query_search_messages_st(q, &msgs) != NOTMUCH_STATUS_SUCCESS)
     return false;
 #else
@@ -1276,24 +1339,22 @@ static bool read_mesgs_query(CONTEXT *ctx, notmuch_query_t *q, int dedup)
   return true;
 }
 
-static bool read_threads_query(CONTEXT *ctx, notmuch_query_t *q, int dedup,
-                               int limit)
+static bool read_threads_query(struct Context *ctx, notmuch_query_t *q, int dedup, int limit)
 {
-  struct nm_ctxdata *data = get_ctxdata(ctx);
-  notmuch_threads_t *threads;
+  struct NmCtxData *data = get_ctxdata(ctx);
+  notmuch_threads_t *threads = NULL;
 
   if (!data)
     return false;
 
-#if LIBNOTMUCH_CHECK_VERSION(4,3,0)
+#if LIBNOTMUCH_CHECK_VERSION(4, 3, 0)
   if (notmuch_query_search_threads_st(q, &threads) != NOTMUCH_STATUS_SUCCESS)
     return false;
 #else
   threads = notmuch_query_search_threads(q);
 #endif
 
-  for (; notmuch_threads_valid(threads) &&
-         ((limit == 0) || (ctx->msgcount < limit));
+  for (; notmuch_threads_valid(threads) && ((limit == 0) || (ctx->msgcount < limit));
        notmuch_threads_move_to_next(threads))
   {
     if (SigInt == 1)
@@ -1308,12 +1369,12 @@ static bool read_threads_query(CONTEXT *ctx, notmuch_query_t *q, int dedup,
   return true;
 }
 
-static notmuch_message_t *get_nm_message(notmuch_database_t *db, HEADER *hdr)
+static notmuch_message_t *get_nm_message(notmuch_database_t *db, struct Header *hdr)
 {
   notmuch_message_t *msg = NULL;
   char *id = header_get_id(hdr);
 
-  dprint(2, (debugfile, "nm: find message (%s)\n", id));
+  mutt_debug(2, "nm: find message (%s)\n", id);
 
   if (id && db)
     notmuch_database_find_message(db, id, &msg);
@@ -1323,8 +1384,8 @@ static notmuch_message_t *get_nm_message(notmuch_database_t *db, HEADER *hdr)
 
 static bool nm_message_has_tag(notmuch_message_t *msg, char *tag)
 {
-  const char *possible_match_tag;
-  notmuch_tags_t *tags;
+  const char *possible_match_tag = NULL;
+  notmuch_tags_t *tags = NULL;
 
   for (tags = notmuch_message_get_tags(msg); notmuch_tags_valid(tags);
        notmuch_tags_move_to_next(tags))
@@ -1340,7 +1401,7 @@ static bool nm_message_has_tag(notmuch_message_t *msg, char *tag)
 
 static int update_tags(notmuch_message_t *msg, const char *tags)
 {
-  char *tag = NULL, *end = NULL, *p;
+  char *tag = NULL, *end = NULL, *p = NULL;
   char *buf = safe_strdup(tags);
 
   if (!buf)
@@ -1367,24 +1428,24 @@ static int update_tags(notmuch_message_t *msg, const char *tags)
 
     if (*tag == '-')
     {
-      dprint(1, (debugfile, "nm: remove tag: '%s'\n", tag + 1));
+      mutt_debug(1, "nm: remove tag: '%s'\n", tag + 1);
       notmuch_message_remove_tag(msg, tag + 1);
     }
     else if (*tag == '!')
     {
-      dprint(1, (debugfile, "nm: toggle tag: '%s'\n", tag + 1));
-      if (nm_message_has_tag (msg, tag + 1))
+      mutt_debug(1, "nm: toggle tag: '%s'\n", tag + 1);
+      if (nm_message_has_tag(msg, tag + 1))
       {
-        notmuch_message_remove_tag (msg, tag + 1);
+        notmuch_message_remove_tag(msg, tag + 1);
       }
       else
       {
-        notmuch_message_add_tag (msg, tag + 1);
+        notmuch_message_add_tag(msg, tag + 1);
       }
     }
     else
     {
-      dprint(1, (debugfile, "nm: add tag: '%s'\n", (*tag == '+') ? tag + 1 : tag));
+      mutt_debug(1, "nm: add tag: '%s'\n", (*tag == '+') ? tag + 1 : tag);
       notmuch_message_add_tag(msg, (*tag == '+') ? tag + 1 : tag);
     }
     end = tag = NULL;
@@ -1395,9 +1456,16 @@ static int update_tags(notmuch_message_t *msg, const char *tags)
   return 0;
 }
 
-static int update_header_flags(CONTEXT *ctx, HEADER *hdr, const char *tags)
+/**
+ * update_header_flags - Update the header flags
+ *
+ * TODO: extract parsing of string to separate function, join
+ * update_header_tags and update_header_flags, which are given an array of
+ * tags.
+ */
+static int update_header_flags(struct Context *ctx, struct Header *hdr, const char *tags)
 {
-  char *tag = NULL, *end = NULL, *p;
+  char *tag = NULL, *end = NULL, *p = NULL;
   char *buf = safe_strdup(tags);
 
   if (!buf)
@@ -1448,12 +1516,12 @@ static int update_header_flags(CONTEXT *ctx, HEADER *hdr, const char *tags)
 }
 
 static int rename_maildir_filename(const char *old, char *newpath, size_t newsz,
-                                   HEADER *h)
+                                   struct Header *h)
 {
   char filename[_POSIX_PATH_MAX];
   char suffix[_POSIX_PATH_MAX];
   char folder[_POSIX_PATH_MAX];
-  char *p;
+  char *p = NULL;
 
   strfcpy(folder, old, sizeof(folder));
   p = strrchr(folder, '/');
@@ -1488,22 +1556,22 @@ static int rename_maildir_filename(const char *old, char *newpath, size_t newsz,
 
   if (rename(old, newpath) != 0)
   {
-    dprint(1, (debugfile, "nm: rename(2) failed %s -> %s\n", old, newpath));
+    mutt_debug(1, "nm: rename(2) failed %s -> %s\n", old, newpath);
     return -1;
   }
 
   return 0;
 }
 
-static int remove_filename(struct nm_ctxdata *data, const char *path)
+static int remove_filename(struct NmCtxData *data, const char *path)
 {
   notmuch_status_t st;
-  notmuch_filenames_t *ls;
+  notmuch_filenames_t *ls = NULL;
   notmuch_message_t *msg = NULL;
   notmuch_database_t *db = get_db(data, true);
   int trans;
 
-  dprint(2, (debugfile, "nm: remove filename '%s'\n", path));
+  mutt_debug(2, "nm: remove filename '%s'\n", path);
 
   if (!db)
     return -1;
@@ -1522,26 +1590,24 @@ static int remove_filename(struct nm_ctxdata *data, const char *path)
   switch (st)
   {
     case NOTMUCH_STATUS_SUCCESS:
-      dprint(2, (debugfile, "nm: remove success, call unlink\n"));
+      mutt_debug(2, "nm: remove success, call unlink\n");
       unlink(path);
       break;
     case NOTMUCH_STATUS_DUPLICATE_MESSAGE_ID:
-      dprint(2, (debugfile, "nm: remove success (duplicate), call unlink\n"));
+      mutt_debug(2, "nm: remove success (duplicate), call unlink\n");
       unlink(path);
       for (ls = notmuch_message_get_filenames(msg);
-           ls && notmuch_filenames_valid(ls);
-           notmuch_filenames_move_to_next(ls))
+           ls && notmuch_filenames_valid(ls); notmuch_filenames_move_to_next(ls))
       {
         path = notmuch_filenames_get(ls);
 
-        dprint(2, (debugfile, "nm: remove duplicate: '%s'\n", path));
+        mutt_debug(2, "nm: remove duplicate: '%s'\n", path);
         unlink(path);
         notmuch_database_remove_message(db, path);
       }
       break;
     default:
-      dprint(1, (debugfile, "nm: failed to remove '%s' [st=%d]\n", path,
-                 (int) st));
+      mutt_debug(1, "nm: failed to remove '%s' [st=%d]\n", path, (int) st);
       break;
   }
 
@@ -1551,49 +1617,47 @@ static int remove_filename(struct nm_ctxdata *data, const char *path)
   return 0;
 }
 
-static int rename_filename(struct nm_ctxdata *data, const char *old,
-                           const char *new, HEADER *h)
+static int rename_filename(struct NmCtxData *data, const char *old,
+                           const char *new, struct Header *h)
 {
   int rc = -1;
   notmuch_status_t st;
-  notmuch_filenames_t *ls;
-  notmuch_message_t *msg;
+  notmuch_filenames_t *ls = NULL;
+  notmuch_message_t *msg = NULL;
   notmuch_database_t *db = get_db(data, true);
   int trans;
 
   if (!db || !new || !old || (access(new, F_OK) != 0))
     return -1;
 
-  dprint(1, (debugfile, "nm: rename filename, %s -> %s\n", old, new));
+  mutt_debug(1, "nm: rename filename, %s -> %s\n", old, new);
   trans = db_trans_begin(data);
   if (trans < 0)
     return -1;
 
-  dprint(2, (debugfile, "nm: rename: add '%s'\n", new));
+  mutt_debug(2, "nm: rename: add '%s'\n", new);
   st = notmuch_database_add_message(db, new, &msg);
 
-  if ((st != NOTMUCH_STATUS_SUCCESS) &&
-      (st != NOTMUCH_STATUS_DUPLICATE_MESSAGE_ID))
+  if ((st != NOTMUCH_STATUS_SUCCESS) && (st != NOTMUCH_STATUS_DUPLICATE_MESSAGE_ID))
   {
-    dprint(1, (debugfile, "nm: failed to add '%s' [st=%d]\n", new, (int) st));
+    mutt_debug(1, "nm: failed to add '%s' [st=%d]\n", new, (int) st);
     goto done;
   }
 
-  dprint(2, (debugfile, "nm: rename: rem '%s'\n", old));
+  mutt_debug(2, "nm: rename: rem '%s'\n", old);
   st = notmuch_database_remove_message(db, old);
   switch (st)
   {
     case NOTMUCH_STATUS_SUCCESS:
       break;
     case NOTMUCH_STATUS_DUPLICATE_MESSAGE_ID:
-      dprint(2, (debugfile, "nm: rename: syncing duplicate filename\n"));
+      mutt_debug(2, "nm: rename: syncing duplicate filename\n");
       notmuch_message_destroy(msg);
       msg = NULL;
       notmuch_database_find_message_by_filename(db, new, &msg);
 
       for (ls = notmuch_message_get_filenames(msg);
-           msg && ls && notmuch_filenames_valid(ls);
-           notmuch_filenames_move_to_next(ls))
+           msg && ls && notmuch_filenames_valid(ls); notmuch_filenames_move_to_next(ls))
       {
         const char *path = notmuch_filenames_get(ls);
         char newpath[_POSIX_PATH_MAX];
@@ -1601,11 +1665,11 @@ static int rename_filename(struct nm_ctxdata *data, const char *old,
         if (strcmp(new, path) == 0)
           continue;
 
-        dprint(2, (debugfile, "nm: rename: syncing duplicate: %s\n", path));
+        mutt_debug(2, "nm: rename: syncing duplicate: %s\n", path);
 
         if (rename_maildir_filename(path, newpath, sizeof(newpath), h) == 0)
         {
-          dprint(2, (debugfile, "nm: rename dup %s -> %s\n", path, newpath));
+          mutt_debug(2, "nm: rename dup %s -> %s\n", path, newpath);
           notmuch_database_remove_message(db, path);
           notmuch_database_add_message(db, newpath, NULL);
         }
@@ -1616,7 +1680,7 @@ static int rename_filename(struct nm_ctxdata *data, const char *old,
       st = NOTMUCH_STATUS_SUCCESS;
       break;
     default:
-      dprint(1, (debugfile, "nm: failed to remove '%s' [st=%d]\n", old, (int) st));
+      mutt_debug(1, "nm: failed to remove '%s' [st=%d]\n", old, (int) st);
       break;
   }
 
@@ -1644,44 +1708,41 @@ static unsigned count_query(notmuch_database_t *db, const char *qstr)
   if (q)
   {
     apply_exclude_tags(q);
-#if LIBNOTMUCH_CHECK_VERSION(4,3,0)
+#if LIBNOTMUCH_CHECK_VERSION(4, 3, 0)
     if (notmuch_query_count_messages_st(q, &res) != NOTMUCH_STATUS_SUCCESS)
       res = 0; /* may not be defined on error */
 #else
     res = notmuch_query_count_messages(q);
 #endif
     notmuch_query_destroy(q);
-    dprint(1, (debugfile, "nm: count '%s', result=%d\n", qstr, res));
+    mutt_debug(1, "nm: count '%s', result=%d\n", qstr, res);
   }
   return res;
 }
 
-
-char *nm_header_get_folder(HEADER *h)
+char *nm_header_get_folder(struct Header *h)
 {
-  return (h && h->data) ? ((struct nm_hdrdata *) h->data)->folder : NULL;
+  return (h && h->data) ? ((struct NmHdrData *) h->data)->folder : NULL;
 }
 
-char *nm_header_get_tags(HEADER *h)
+char *nm_header_get_tags(struct Header *h)
 {
-  return (h && h->data) ? ((struct nm_hdrdata *) h->data)->tags : NULL;
+  return (h && h->data) ? ((struct NmHdrData *) h->data)->tags : NULL;
 }
 
-char *nm_header_get_tags_transformed(HEADER *h)
+char *nm_header_get_tags_transformed(struct Header *h)
 {
-  return (h && h->data) ? ((struct nm_hdrdata *) h->data)->tags_transformed : NULL;
+  return (h && h->data) ? ((struct NmHdrData *) h->data)->tags_transformed : NULL;
 }
 
-char *nm_header_get_tag_transformed(char *tag, HEADER *h)
+char *nm_header_get_tag_transformed(char *tag, struct Header *h)
 {
-  struct nm_hdrtag *tmp;
+  struct NmHdrTag *tmp = NULL;
 
   if (!h || !h->data)
     return NULL;
 
-  for (tmp = ((struct nm_hdrdata *) h->data)->tag_list;
-       tmp != NULL;
-       tmp = tmp->next)
+  for (tmp = ((struct NmHdrData *) h->data)->tag_list; tmp != NULL; tmp = tmp->next)
   {
     if (strcmp(tag, tmp->tag) == 0)
       return tmp->transformed;
@@ -1690,42 +1751,42 @@ char *nm_header_get_tag_transformed(char *tag, HEADER *h)
   return NULL;
 }
 
-void nm_longrun_init(CONTEXT *ctx, int writable)
+void nm_longrun_init(struct Context *ctx, int writable)
 {
-  struct nm_ctxdata *data = get_ctxdata(ctx);
+  struct NmCtxData *data = get_ctxdata(ctx);
 
   if (data && get_db(data, writable))
   {
-    data->longrun = 1;
-    dprint(2, (debugfile, "nm: long run initialized\n"));
+    data->longrun = true;
+    mutt_debug(2, "nm: long run initialized\n");
   }
 }
 
-void nm_longrun_done(CONTEXT *ctx)
+void nm_longrun_done(struct Context *ctx)
 {
-  struct nm_ctxdata *data = get_ctxdata(ctx);
+  struct NmCtxData *data = get_ctxdata(ctx);
 
   if (data && (release_db(data) == 0))
-    dprint(2, (debugfile, "nm: long run deinitialized\n"));
+    mutt_debug(2, "nm: long run deinitialized\n");
 }
 
-void nm_debug_check(CONTEXT *ctx)
+void nm_debug_check(struct Context *ctx)
 {
-  struct nm_ctxdata *data = get_ctxdata(ctx);
+  struct NmCtxData *data = get_ctxdata(ctx);
   if (!data)
     return;
 
   if (data->db)
   {
-    dprint(1, (debugfile, "nm: ERROR: db is open, closing\n"));
+    mutt_debug(1, "nm: ERROR: db is open, closing\n");
     release_db(data);
   }
 }
 
-int nm_read_entire_thread(CONTEXT *ctx, HEADER *h)
+int nm_read_entire_thread(struct Context *ctx, struct Header *h)
 {
-  struct nm_ctxdata *data = get_ctxdata(ctx);
-  const char *id;
+  struct NmCtxData *data = get_ctxdata(ctx);
+  const char *id = NULL;
   char *qstr = NULL;
   notmuch_query_t *q = NULL;
   notmuch_database_t *db = NULL;
@@ -1737,9 +1798,7 @@ int nm_read_entire_thread(CONTEXT *ctx, HEADER *h)
   if (!(db = get_db(data, false)) || !(msg = get_nm_message(db, h)))
     goto done;
 
-  dprint(1, (debugfile,
-             "nm: reading entire-thread messages...[current count=%d]\n",
-             ctx->msgcount));
+  mutt_debug(1, "nm: reading entire-thread messages...[current count=%d]\n", ctx->msgcount);
 
   progress_reset(ctx);
   id = notmuch_message_get_thread_id(msg);
@@ -1771,31 +1830,40 @@ done:
     mutt_message(_("No more messages in the thread."));
 
   data->oldmsgcount = 0;
-  dprint(1, (debugfile,
+  mutt_debug(1,
              "nm: reading entire-thread messages... done [rc=%d, count=%d]\n",
-             rc, ctx->msgcount));
+             rc, ctx->msgcount);
   return rc;
 }
 
-char *nm_uri_from_query(CONTEXT *ctx, char *buf, size_t bufsz)
+char *nm_uri_from_query(struct Context *ctx, char *buf, size_t bufsz)
 {
-  dprint(2, (debugfile, "nm_uri_from_query (%s)\n", buf));
-  struct nm_ctxdata *data = get_ctxdata(ctx);
+  mutt_debug(2, "nm_uri_from_query (%s)\n", buf);
+  struct NmCtxData *data = get_ctxdata(ctx);
   char uri[_POSIX_PATH_MAX + LONG_STRING + 32]; /* path to DB + query + URI "decoration" */
+  int added;
 
   if (data)
-    snprintf(uri, sizeof(uri), "notmuch://%s?query=%s", get_db_filename(data), buf);
+    added = snprintf(uri, sizeof(uri), "notmuch://%s?query=", get_db_filename(data));
   else if (NotmuchDefaultUri)
-    snprintf(uri, sizeof(uri), "%s?query=%s", NotmuchDefaultUri, buf);
+    added = snprintf(uri, sizeof(uri), "%s?query=", NotmuchDefaultUri);
   else if (Maildir)
-    snprintf(uri, sizeof(uri), "notmuch://%s?query=%s", Maildir, buf);
+    added = snprintf(uri, sizeof(uri), "notmuch://%s?query=", Maildir);
   else
     return NULL;
+
+  if (added >= sizeof(uri))
+  {
+    // snprintf output was truncated, so can't create URI
+    return NULL;
+  }
+
+  url_pct_encode(&uri[added], sizeof(uri) - added, buf);
 
   strncpy(buf, uri, bufsz);
   buf[bufsz - 1] = '\0';
 
-  dprint(1, (debugfile, "nm: uri from query '%s'\n", buf));
+  mutt_debug(1, "nm: uri from query '%s'\n", buf);
   return buf;
 }
 
@@ -1804,9 +1872,8 @@ char *nm_uri_from_query(CONTEXT *ctx, char *buf, size_t bufsz)
  * @param new_uri    allocated string receiving the reformatted URI
  * @param orig_uri   original URI to be parsed
  * @param new_uri_sz size of the allocated new_uri string
- *
- * @return false if orig_uri contains an invalid query, true if new_uri contains a
- *  normalized version of the query.
+ * @retval true if new_uri contains a normalized version of the query
+ * @retval false if orig_uri contains an invalid query
  *
  * This function aims at making notmuch searches URI representations deterministic,
  * so that when comparing two equivalent searches they will be the same. It works
@@ -1818,46 +1885,46 @@ char *nm_uri_from_query(CONTEXT *ctx, char *buf, size_t bufsz)
  */
 bool nm_normalize_uri(char *new_uri, const char *orig_uri, size_t new_uri_sz)
 {
-  dprint(2, (debugfile, "nm_normalize_uri (%s)\n", orig_uri));
+  mutt_debug(2, "nm_normalize_uri (%s)\n", orig_uri);
   char buf[LONG_STRING];
 
-  CONTEXT tmp_ctx;
-  struct nm_ctxdata tmp_ctxdata;
+  struct Context tmp_ctx;
+  struct NmCtxData tmp_ctxdata;
 
   tmp_ctx.magic = MUTT_NOTMUCH;
   tmp_ctx.data = &tmp_ctxdata;
   tmp_ctxdata.db_query = NULL;
 
-  if (url_parse_query(orig_uri, &tmp_ctxdata.db_filename, &tmp_ctxdata.query_items))
+  if (!url_parse_query(orig_uri, &tmp_ctxdata.db_filename, &tmp_ctxdata.query_items))
   {
     mutt_error(_("failed to parse notmuch uri: %s"), orig_uri);
-    dprint(2, (debugfile, "nm_normalize_uri () -> error #1\n"));
+    mutt_debug(2, "nm_normalize_uri () -> error #1\n");
     return false;
   }
 
-  dprint(2, (debugfile, "nm_normalize_uri #1 () -> db_query: %s\n", tmp_ctxdata.db_query));
+  mutt_debug(2, "nm_normalize_uri #1 () -> db_query: %s\n", tmp_ctxdata.db_query);
 
   if (get_query_string(&tmp_ctxdata, false) == NULL)
   {
     mutt_error(_("failed to parse notmuch uri: %s"), orig_uri);
-    dprint(2, (debugfile, "nm_normalize_uri () -> error #2\n"));
+    mutt_debug(2, "nm_normalize_uri () -> error #2\n");
     return false;
   }
 
-  dprint(2, (debugfile, "nm_normalize_uri #2 () -> db_query: %s\n", tmp_ctxdata.db_query));
+  mutt_debug(2, "nm_normalize_uri #2 () -> db_query: %s\n", tmp_ctxdata.db_query);
 
-  strncpy(buf, tmp_ctxdata.db_query, sizeof(buf));
+  strfcpy(buf, tmp_ctxdata.db_query, sizeof(buf));
 
   if (nm_uri_from_query(&tmp_ctx, buf, sizeof(buf)) == NULL)
   {
     mutt_error(_("failed to parse notmuch uri: %s"), orig_uri);
-    dprint(2, (debugfile, "nm_normalize_uri () -> error #3\n"));
+    mutt_debug(2, "nm_normalize_uri () -> error #3\n");
     return true;
   }
 
   strncpy(new_uri, buf, new_uri_sz);
 
-  dprint(2, (debugfile, "nm_normalize_uri #3 (%s) -> %s\n", orig_uri, new_uri));
+  mutt_debug(2, "nm_normalize_uri #3 (%s) -> %s\n", orig_uri, new_uri);
   return true;
 }
 
@@ -1873,9 +1940,9 @@ bool nm_normalize_uri(char *new_uri, const char *orig_uri, size_t new_uri_sz)
 void nm_query_window_forward(void)
 {
   if (NotmuchQueryWindowCurrentPosition != 0)
-    NotmuchQueryWindowCurrentPosition -= 1;
+    NotmuchQueryWindowCurrentPosition--;
 
-  dprint(2, (debugfile, "nm_query_window_forward (%d)\n", NotmuchQueryWindowCurrentPosition));
+  mutt_debug(2, "nm_query_window_forward (%d)\n", NotmuchQueryWindowCurrentPosition);
 }
 
 /**
@@ -1888,13 +1955,13 @@ void nm_query_window_forward(void)
  */
 void nm_query_window_backward(void)
 {
-  NotmuchQueryWindowCurrentPosition += 1;
-  dprint(2, (debugfile, "nm_query_window_backward (%d)\n", NotmuchQueryWindowCurrentPosition));
+  NotmuchQueryWindowCurrentPosition++;
+  mutt_debug(2, "nm_query_window_backward (%d)\n", NotmuchQueryWindowCurrentPosition);
 }
 
-int nm_modify_message_tags(CONTEXT *ctx, HEADER *hdr, char *buf)
+int nm_modify_message_tags(struct Context *ctx, struct Header *hdr, char *buf)
 {
-  struct nm_ctxdata *data = get_ctxdata(ctx);
+  struct NmCtxData *data = get_ctxdata(ctx);
   notmuch_database_t *db = NULL;
   notmuch_message_t *msg = NULL;
   int rc = -1;
@@ -1905,7 +1972,7 @@ int nm_modify_message_tags(CONTEXT *ctx, HEADER *hdr, char *buf)
   if (!(db = get_db(data, true)) || !(msg = get_nm_message(db, hdr)))
     goto done;
 
-  dprint(1, (debugfile, "nm: tags modify: '%s'\n", buf));
+  mutt_debug(1, "nm: tags modify: '%s'\n", buf);
 
   update_tags(msg, buf);
   update_header_flags(ctx, hdr, buf);
@@ -1919,16 +1986,76 @@ done:
     release_db(data);
   if (hdr->changed)
     ctx->mtime = time(NULL);
-  dprint(1, (debugfile, "nm: tags modify done [rc=%d]\n", rc));
+  mutt_debug(1, "nm: tags modify done [rc=%d]\n", rc);
   return rc;
 }
 
-int nm_update_filename(CONTEXT *ctx, const char *old, const char *new,
-                       HEADER *h)
+bool nm_message_is_still_queried(struct Context *ctx, struct Header *hdr)
+{
+  char *orig_str = NULL;
+  char *new_str = NULL;
+  struct NmCtxData *data = get_ctxdata(ctx);
+  notmuch_database_t *db = NULL;
+  notmuch_query_t *q = NULL;
+  bool result = false;
+
+  db = get_db(data, false);
+  orig_str = get_query_string(data, true);
+
+  if (!db || !orig_str)
+    return false;
+
+  if (safe_asprintf(&new_str, "id:%s and (%s)", header_get_id(hdr), orig_str) < 0)
+    return false;
+
+  mutt_debug(2, "nm: checking if message is still queried: %s\n", new_str);
+
+  q = notmuch_query_create(db, new_str);
+
+  switch (get_query_type(data))
+  {
+    case NM_QUERY_TYPE_MESGS:
+    {
+      notmuch_messages_t *messages = NULL;
+#if LIBNOTMUCH_CHECK_VERSION(4, 3, 0)
+      if (notmuch_query_search_messages_st(q, &messages) != NOTMUCH_STATUS_SUCCESS)
+        return false;
+#else
+      messages = notmuch_query_search_messages(q);
+#endif
+      result = notmuch_messages_valid(messages);
+      notmuch_messages_destroy(messages);
+      break;
+    }
+    case NM_QUERY_TYPE_THREADS:
+    {
+      notmuch_threads_t *threads = NULL;
+#if LIBNOTMUCH_CHECK_VERSION(4, 3, 0)
+      if (notmuch_query_search_threads_st(q, &threads) != NOTMUCH_STATUS_SUCCESS)
+        return false;
+#else
+      threads = notmuch_query_search_threads(q);
+#endif
+      result = notmuch_threads_valid(threads);
+      notmuch_threads_destroy(threads);
+      break;
+    }
+  }
+
+  notmuch_query_destroy(q);
+
+  mutt_debug(2, "nm: checking if message is still queried: %s = %s\n", new_str,
+             result ? "true" : "false");
+
+  return result;
+}
+
+int nm_update_filename(struct Context *ctx, const char *old, const char *new,
+                       struct Header *h)
 {
   char buf[PATH_MAX];
   int rc;
-  struct nm_ctxdata *data = get_ctxdata(ctx);
+  struct NmCtxData *data = get_ctxdata(ctx);
 
   if (!data || !new)
     return -1;
@@ -1949,14 +2076,15 @@ int nm_update_filename(CONTEXT *ctx, const char *old, const char *new,
 
 int nm_nonctx_get_count(char *path, int *all, int *new)
 {
-  struct uri_tag *query_items = NULL, *item;
+  struct UriTag *query_items = NULL, *item = NULL;
   char *db_filename = NULL, *db_query = NULL;
   notmuch_database_t *db = NULL;
-  int rc = -1, dflt = 0;
+  int rc = -1;
+  bool dflt = false;
 
-  dprint(1, (debugfile, "nm: count\n"));
+  mutt_debug(1, "nm: count\n");
 
-  if (url_parse_query(path, &db_filename, &query_items))
+  if (!url_parse_query(path, &db_filename, &query_items))
   {
     mutt_error(_("failed to parse notmuch uri: %s"), path);
     goto done;
@@ -1987,7 +2115,7 @@ int nm_nonctx_get_count(char *path, int *all, int *new)
     }
     else if (Maildir)
       db_filename = Maildir;
-    dflt = 1;
+    dflt = true;
   }
 
   /* don't be verbose about connection, as we're called from
@@ -2003,7 +2131,7 @@ int nm_nonctx_get_count(char *path, int *all, int *new)
   /* new messages */
   if (new)
   {
-    char *qstr;
+    char *qstr = NULL;
 
     safe_asprintf(&qstr, "( %s ) tag:%s", db_query, NotmuchUnreadTag);
     *new = count_query(db, qstr);
@@ -2019,52 +2147,50 @@ done:
 #else
     notmuch_database_close(db);
 #endif
-    dprint(1, (debugfile, "nm: count close DB\n"));
+    mutt_debug(1, "nm: count close DB\n");
   }
   if (!dflt)
     FREE(&db_filename);
   url_free_tags(query_items);
 
-  dprint(1, (debugfile, "nm: count done [rc=%d]\n", rc));
+  mutt_debug(1, "nm: count done [rc=%d]\n", rc);
   return rc;
 }
 
-char *nm_get_description(CONTEXT *ctx)
+char *nm_get_description(struct Context *ctx)
 {
-  BUFFY *p;
-
-  for (p = VirtIncoming; p; p = p->next)
-    if (p->desc && (strcmp(p->path, ctx->path) == 0))
-      return p->desc;
+  for (struct Buffy *b = Incoming; b; b = b->next)
+    if (b->desc && (strcmp(b->path, ctx->path) == 0))
+      return b->desc;
 
   return NULL;
 }
 
 int nm_description_to_path(const char *desc, char *buf, size_t bufsz)
 {
-  BUFFY *p;
-
   if (!desc || !buf || !bufsz)
     return -EINVAL;
 
-  for (p = VirtIncoming; p; p = p->next)
-    if (p->desc && (strcmp(desc, p->desc) == 0))
+  for (struct Buffy *b = Incoming; b; b = b->next)
+  {
+    if ((b->magic == MUTT_NOTMUCH) && b->desc && (strcmp(desc, b->desc) == 0))
     {
-      strncpy(buf, p->path, bufsz);
+      strncpy(buf, b->path, bufsz);
       buf[bufsz - 1] = '\0';
       return 0;
     }
+  }
 
   return -1;
 }
 
-int nm_record_message(CONTEXT *ctx, char *path, HEADER *h)
+int nm_record_message(struct Context *ctx, char *path, struct Header *h)
 {
-  notmuch_database_t *db;
+  notmuch_database_t *db = NULL;
   notmuch_status_t st;
   notmuch_message_t *msg = NULL;
   int rc = -1, trans;
-  struct nm_ctxdata *data = get_ctxdata(ctx);
+  struct NmCtxData *data = get_ctxdata(ctx);
 
   if (!path || !data || (access(path, F_OK) != 0))
     return 0;
@@ -2072,17 +2198,16 @@ int nm_record_message(CONTEXT *ctx, char *path, HEADER *h)
   if (!db)
     return -1;
 
-  dprint(1, (debugfile, "nm: record message: %s\n", path));
+  mutt_debug(1, "nm: record message: %s\n", path);
   trans = db_trans_begin(data);
   if (trans < 0)
     goto done;
 
   st = notmuch_database_add_message(db, path, &msg);
 
-  if ((st != NOTMUCH_STATUS_SUCCESS) &&
-      (st != NOTMUCH_STATUS_DUPLICATE_MESSAGE_ID))
+  if ((st != NOTMUCH_STATUS_SUCCESS) && (st != NOTMUCH_STATUS_DUPLICATE_MESSAGE_ID))
   {
-    dprint(1, (debugfile, "nm: failed to add '%s' [st=%d]\n", path, (int) st));
+    mutt_debug(1, "nm: failed to add '%s' [st=%d]\n", path, (int) st);
     goto done;
   }
 
@@ -2106,30 +2231,38 @@ done:
   return rc;
 }
 
-int nm_get_all_tags(CONTEXT *ctx, char **tag_list, int *tag_count)
+/**
+ * nm_get_all_tags - Fill a list with all notmuch tags
+ *
+ * If tag_list is NULL, just count the tags.
+ */
+int nm_get_all_tags(struct Context *ctx, char **tag_list, int *tag_count)
 {
-  struct nm_ctxdata *data = get_ctxdata(ctx);
+  struct NmCtxData *data = get_ctxdata(ctx);
   notmuch_database_t *db = NULL;
   notmuch_tags_t *tags = NULL;
+  const char *tag = NULL;
   int rc = -1;
 
   if (!data)
     return -1;
 
-  if (!(db = get_db(data, false)) ||
-      !(tags = notmuch_database_get_all_tags(db)))
+  if (!(db = get_db(data, false)) || !(tags = notmuch_database_get_all_tags(db)))
     goto done;
 
   *tag_count = 0;
-  dprint(1, (debugfile, "nm: get all tags\n"));
+  mutt_debug(1, "nm: get all tags\n");
 
   while (notmuch_tags_valid(tags))
   {
-    if (tag_list != NULL)
+    tag = notmuch_tags_get(tags);
+    /* Skip empty string */
+    if (*tag)
     {
-      tag_list[*tag_count] = safe_strdup(notmuch_tags_get(tags));
+      if (tag_list)
+        tag_list[*tag_count] = safe_strdup(tag);
+      (*tag_count)++;
     }
-    (*tag_count)++;
     notmuch_tags_move_to_next(tags);
   }
 
@@ -2141,16 +2274,21 @@ done:
   if (!is_longrun(data))
     release_db(data);
 
-  dprint(1, (debugfile, "nm: get all tags done [rc=%d tag_count=%u]\n", rc,
-             *tag_count));
+  mutt_debug(1, "nm: get all tags done [rc=%d tag_count=%u]\n", rc, *tag_count);
   return rc;
 }
 
+/**
+ * nm_open_mailbox - Open a notmuch virtual mailbox
+ * @param ctx A mailbox CONTEXT
+ * @retval  0 Success
+ * @retval -1 Error
+ */
 
-static int nm_open_mailbox(CONTEXT *ctx)
+static int nm_open_mailbox(struct Context *ctx)
 {
-  notmuch_query_t *q;
-  struct nm_ctxdata *data;
+  notmuch_query_t *q = NULL;
+  struct NmCtxData *data = NULL;
   int rc = -1;
 
   if (init_context(ctx) != 0)
@@ -2160,8 +2298,7 @@ static int nm_open_mailbox(CONTEXT *ctx)
   if (!data)
     return -1;
 
-  dprint(1, (debugfile, "nm: reading messages...[current count=%d]\n",
-             ctx->msgcount));
+  mutt_debug(1, "nm: reading messages...[current count=%d]\n", ctx->msgcount);
 
   progress_reset(ctx);
 
@@ -2191,21 +2328,24 @@ static int nm_open_mailbox(CONTEXT *ctx)
   mx_update_context(ctx, ctx->msgcount);
   data->oldmsgcount = 0;
 
-  dprint(1, (debugfile, "nm: reading messages... done [rc=%d, count=%d]\n", rc,
-             ctx->msgcount));
+  mutt_debug(1, "nm: reading messages... done [rc=%d, count=%d]\n", rc, ctx->msgcount);
   return rc;
 }
 
-static int nm_close_mailbox(CONTEXT *ctx)
+/**
+ * nm_close_mailbox - Close a notmuch virtual mailbox
+ * @param ctx A mailbox CONTEXT
+ * @retval  0 Success
+ * @retval -1 Error
+ */
+static int nm_close_mailbox(struct Context *ctx)
 {
-  int i;
-
   if (!ctx || (ctx->magic != MUTT_NOTMUCH))
     return -1;
 
-  for (i = 0; i < ctx->msgcount; i++)
+  for (int i = 0; i < ctx->msgcount; i++)
   {
-    HEADER *h = ctx->hdrs[i];
+    struct Header *h = ctx->hdrs[i];
 
     if (h)
     {
@@ -2219,40 +2359,50 @@ static int nm_close_mailbox(CONTEXT *ctx)
   return 0;
 }
 
-static int nm_check_mailbox(CONTEXT *ctx, int *index_hint)
+/**
+ * nm_check_mailbox - Check a notmuch mailbox for new mail
+ * @param ctx         A mailbox CONTEXT
+ * @param index_hint  Remeber our place in the index
+ * @retval -1 Error
+ * @retval  0 Success
+ * @retval #MUTT_NEW_MAIL - new mail has arrived
+ * @retval #MUTT_REOPENED - mailbox closed and reopened
+ * @retval #MUTT_FLAGS - flags have changed
+ */
+static int nm_check_mailbox(struct Context *ctx, int *index_hint)
 {
-  struct nm_ctxdata *data = get_ctxdata(ctx);
+  struct NmCtxData *data = get_ctxdata(ctx);
   time_t mtime = 0;
-  notmuch_query_t *q;
-  notmuch_messages_t *msgs;
-  int i, limit, occult = 0, new_flags = 0;
+  notmuch_query_t *q = NULL;
+  notmuch_messages_t *msgs = NULL;
+  int i, limit, new_flags = 0;
+  bool occult = false;
 
   if (!data || (get_database_mtime(data, &mtime) != 0))
     return -1;
 
   if (ctx->mtime >= mtime)
   {
-    dprint(2, (debugfile, "nm: check unnecessary (db=%d ctx=%d)\n", mtime,
-               ctx->mtime));
+    mutt_debug(2, "nm: check unnecessary (db=%lu ctx=%lu)\n", mtime, ctx->mtime);
     return 0;
   }
 
-  dprint(1, (debugfile, "nm: checking (db=%d ctx=%d)\n", mtime, ctx->mtime));
+  mutt_debug(1, "nm: checking (db=%lu ctx=%lu)\n", mtime, ctx->mtime);
 
   q = get_query(data, false);
   if (!q)
     goto done;
 
-  dprint(1, (debugfile, "nm: start checking (count=%d)\n", ctx->msgcount));
+  mutt_debug(1, "nm: start checking (count=%d)\n", ctx->msgcount);
   data->oldmsgcount = ctx->msgcount;
-  data->noprogress = 1;
+  data->noprogress = true;
 
   for (i = 0; i < ctx->msgcount; i++)
-    ctx->hdrs[i]->active = 0;
+    ctx->hdrs[i]->active = false;
 
   limit = get_limit(data);
 
-#if LIBNOTMUCH_CHECK_VERSION(4,3,0)
+#if LIBNOTMUCH_CHECK_VERSION(4, 3, 0)
   if (notmuch_query_search_messages_st(q, &msgs) != NOTMUCH_STATUS_SUCCESS)
     goto done;
 #else
@@ -2263,10 +2413,10 @@ static int nm_check_mailbox(CONTEXT *ctx, int *index_hint)
        notmuch_messages_move_to_next(msgs), i++)
   {
     char old[_POSIX_PATH_MAX];
-    const char *new;
+    const char *new = NULL;
 
     notmuch_message_t *m = notmuch_messages_get(msgs);
-    HEADER *h = get_mutt_header(ctx, m);
+    struct Header *h = get_mutt_header(ctx, m);
 
     if (!h)
     {
@@ -2277,10 +2427,10 @@ static int nm_check_mailbox(CONTEXT *ctx, int *index_hint)
     }
 
     /* message already exists, merge flags */
-    h->active = 1;
+    h->active = true;
 
-    /* check to see if the message has moved to a different
-     * subdirectory.  If so, update the associated filename.
+    /* Check to see if the message has moved to a different subdirectory.
+     * If so, update the associated filename.
      */
     new = get_message_last_filename(m);
     header_get_fullpath(h, old, sizeof(old));
@@ -2294,7 +2444,7 @@ static int nm_check_mailbox(CONTEXT *ctx, int *index_hint)
        * this message, update the flags we just
        * detected.
        */
-      HEADER tmp;
+      struct Header tmp;
       memset(&tmp, 0, sizeof(tmp));
       maildir_parse_flags(&tmp, new);
       maildir_update_flags(ctx, h, &tmp);
@@ -2308,9 +2458,9 @@ static int nm_check_mailbox(CONTEXT *ctx, int *index_hint)
 
   for (i = 0; i < ctx->msgcount; i++)
   {
-    if (ctx->hdrs[i]->active == 0)
+    if (!ctx->hdrs[i]->active)
     {
-      occult = 1;
+      occult = true;
       break;
     }
   }
@@ -2326,41 +2476,45 @@ done:
 
   ctx->mtime = time(NULL);
 
-  dprint(1, (debugfile, "nm: ... check done [count=%d, new_flags=%d, occult=%d]\n",
-          ctx->msgcount, new_flags, occult));
+  mutt_debug(1, "nm: ... check done [count=%d, new_flags=%d, occult=%d]\n",
+             ctx->msgcount, new_flags, occult);
 
-  return occult ? MUTT_REOPENED : (ctx->msgcount > data->oldmsgcount) ?
-                  MUTT_NEW_MAIL :
-                  new_flags ? MUTT_FLAGS : 0;
+  return occult ? MUTT_REOPENED :
+                  (ctx->msgcount > data->oldmsgcount) ? MUTT_NEW_MAIL :
+                                                        new_flags ? MUTT_FLAGS : 0;
 }
 
-static int nm_sync_mailbox(CONTEXT *ctx, int *index_hint)
+/**
+ * nm_sync_mailbox - Sync a notmuch mailbox
+ * @param ctx        A mailbox CONTEXT
+ * @param index_hint Remember our place in the index
+ */
+static int nm_sync_mailbox(struct Context *ctx, int *index_hint)
 {
-  struct nm_ctxdata *data = get_ctxdata(ctx);
-  int i, rc = 0;
+  struct NmCtxData *data = get_ctxdata(ctx);
+  int rc = 0;
   char msgbuf[STRING];
-  progress_t progress;
+  struct Progress progress;
   char *uri = ctx->path;
-  int changed = 0;
+  bool changed = false;
 
   if (!data)
     return -1;
 
-  dprint(1, (debugfile, "nm: sync start ...\n"));
+  mutt_debug(1, "nm: sync start ...\n");
 
   if (!ctx->quiet)
   {
     /* all is in this function so we don't use data->progress here */
     snprintf(msgbuf, sizeof(msgbuf), _("Writing %s..."), ctx->path);
-    mutt_progress_init(&progress, msgbuf, MUTT_PROGRESS_MSG, WriteInc,
-                       ctx->msgcount);
+    mutt_progress_init(&progress, msgbuf, MUTT_PROGRESS_MSG, WriteInc, ctx->msgcount);
   }
 
-  for (i = 0; i < ctx->msgcount; i++)
+  for (int i = 0; i < ctx->msgcount; i++)
   {
     char old[_POSIX_PATH_MAX], new[_POSIX_PATH_MAX];
-    HEADER *h = ctx->hdrs[i];
-    struct nm_hdrdata *hd = h->data;
+    struct Header *h = ctx->hdrs[i];
+    struct NmHdrData *hd = h->data;
 
     if (!ctx->quiet)
       mutt_progress_update(&progress, i, -1);
@@ -2371,14 +2525,14 @@ static int nm_sync_mailbox(CONTEXT *ctx, int *index_hint)
     {
       strncpy(old, hd->oldpath, sizeof(old));
       old[sizeof(old) - 1] = '\0';
-      dprint(2, (debugfile, "nm: fixing obsolete path '%s'\n", old));
+      mutt_debug(2, "nm: fixing obsolete path '%s'\n", old);
     }
     else
       header_get_fullpath(h, old, sizeof(old));
 
     ctx->path = hd->folder;
     ctx->magic = hd->magic;
-#if USE_HCACHE
+#ifdef USE_HCACHE
     rc = mh_sync_mailbox_message(ctx, i, NULL);
 #else
     rc = mh_sync_mailbox_message(ctx, i);
@@ -2395,9 +2549,9 @@ static int nm_sync_mailbox(CONTEXT *ctx, int *index_hint)
     if (h->deleted || (strcmp(old, new) != 0))
     {
       if (h->deleted && (remove_filename(data, old) == 0))
-        changed = 1;
-      else if (*new && *old && (rename_filename(data, old, new, h) == 0))
-        changed = 1;
+        changed = true;
+      else if (*new &&*old && (rename_filename(data, old, new, h) == 0))
+        changed = true;
     }
 
     FREE(&hd->oldpath);
@@ -2411,15 +2565,23 @@ static int nm_sync_mailbox(CONTEXT *ctx, int *index_hint)
   if (changed)
     ctx->mtime = time(NULL);
 
-  dprint(1, (debugfile, "nm: .... sync done [rc=%d]\n", rc));
+  mutt_debug(1, "nm: .... sync done [rc=%d]\n", rc);
   return rc;
 }
 
-static int nm_open_message(CONTEXT *ctx, MESSAGE *msg, int msgno)
+/**
+ * nm_open_message - Open a message from a notmuch mailbox
+ * @param ctx   A mailbox CONTEXT
+ * @param msg   Message to open
+ * @param msgno Index of message to open
+ * @retval 0 Success
+ * @retval 1 Error
+ */
+static int nm_open_message(struct Context *ctx, struct Message *msg, int msgno)
 {
   if (!ctx || !msg)
     return 1;
-  HEADER *cur = ctx->hdrs[msgno];
+  struct Header *cur = ctx->hdrs[msgno];
   char *folder = ctx->path;
   char path[_POSIX_PATH_MAX];
   folder = nm_header_get_folder(cur);
@@ -2427,15 +2589,22 @@ static int nm_open_message(CONTEXT *ctx, MESSAGE *msg, int msgno)
   snprintf(path, sizeof(path), "%s/%s", folder, cur->path);
 
   msg->fp = fopen(path, "r");
-  if ((msg->fp == NULL) && (errno == ENOENT) &&
+  if (!msg->fp && (errno == ENOENT) &&
       ((ctx->magic == MUTT_MAILDIR) || (ctx->magic == MUTT_NOTMUCH)))
     msg->fp = maildir_open_find_message(folder, cur->path, NULL);
 
-  dprint(1, (debugfile, "%s\n", __func__));
-  return 0;
+  mutt_debug(1, "%s\n", __func__);
+  return !msg->fp;
 }
 
-static int nm_close_message(CONTEXT *ctx, MESSAGE *msg)
+/**
+ * nm_close_message - Close a message
+ * @param ctx A mailbox CONTEXT
+ * @param msg Message to close
+ * @retval 0 Success
+ * @retval 1 Error
+ */
+static int nm_close_message(struct Context *ctx, struct Message *msg)
 {
   if (!msg)
     return 1;
@@ -2443,28 +2612,25 @@ static int nm_close_message(CONTEXT *ctx, MESSAGE *msg)
   return 0;
 }
 
-static int nm_commit_message(CONTEXT *ctx, MESSAGE *msg)
+static int nm_commit_message(struct Context *ctx, struct Message *msg)
 {
   mutt_error(_("Can't write to virtual folder."));
   return -1;
 }
-
 
 /**
  * struct mx_notmuch_ops - Mailbox API
  *
  * These functions are common to all mailbox types.
  */
-struct mx_ops mx_notmuch_ops =
-{
-  .open         = nm_open_mailbox,        /* calls init_context() */
-  .open_append  = NULL,
-  .close        = nm_close_mailbox,
-  .check        = nm_check_mailbox,
-  .sync         = nm_sync_mailbox,
-  .open_msg     = nm_open_message,
-  .close_msg    = nm_close_message,
-  .commit_msg   = nm_commit_message,
-  .open_new_msg = NULL
+struct MxOps mx_notmuch_ops = {
+  .open = nm_open_mailbox, /* calls init_context() */
+  .open_append = NULL,
+  .close = nm_close_mailbox,
+  .check = nm_check_mailbox,
+  .sync = nm_sync_mailbox,
+  .open_msg = nm_open_message,
+  .close_msg = nm_close_message,
+  .commit_msg = nm_commit_message,
+  .open_new_msg = NULL,
 };
-

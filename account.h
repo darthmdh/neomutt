@@ -1,30 +1,36 @@
-/*
+/**
+ * @file
+ * Account object used by POP and IMAP
+ *
+ * @authors
  * Copyright (C) 2000-2007,2012 Brendan Cully <brendan@kublai.com>
- * 
- *     This program is free software; you can redistribute it and/or modify
- *     it under the terms of the GNU General Public License as published by
- *     the Free Software Foundation; either version 2 of the License, or
- *     (at your option) any later version.
- * 
- *     This program is distributed in the hope that it will be useful,
- *     but WITHOUT ANY WARRANTY; without even the implied warranty of
- *     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *     GNU General Public License for more details.
- * 
- *     You should have received a copy of the GNU General Public License
- *     along with this program; if not, write to the Free Software
- *     Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
- */ 
+ *
+ * @copyright
+ * This program is free software: you can redistribute it and/or modify it under
+ * the terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 2 of the License, or (at your option) any later
+ * version.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+ * FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+ * details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 /* remote host account manipulation (POP/IMAP) */
 
-#ifndef _MUTT_ACCOUNT_H_
-#define _MUTT_ACCOUNT_H_ 1
+#ifndef _MUTT_ACCOUNT_H
+#define _MUTT_ACCOUNT_H
 
-#include "url.h"
+struct Url;
 
-/* account types */
-enum
+/**
+ * enum AccountType - account types
+ */
+enum AccountType
 {
   MUTT_ACCT_TYPE_NONE = 0,
   MUTT_ACCT_TYPE_IMAP,
@@ -34,29 +40,32 @@ enum
 };
 
 /* account flags */
-#define MUTT_ACCT_PORT  (1<<0)
-#define MUTT_ACCT_USER  (1<<1)
-#define MUTT_ACCT_LOGIN (1<<2)
-#define MUTT_ACCT_PASS  (1<<3)
-#define MUTT_ACCT_SSL   (1<<4)
+#define MUTT_ACCT_PORT (1 << 0)
+#define MUTT_ACCT_USER (1 << 1)
+#define MUTT_ACCT_LOGIN (1 << 2)
+#define MUTT_ACCT_PASS (1 << 3)
+#define MUTT_ACCT_SSL (1 << 4)
 
-typedef struct
+/**
+ * struct Account - Login details for a remote server
+ */
+struct Account
 {
   char user[64];
   char login[64];
-  char pass[128];
+  char pass[256];
   char host[128];
   unsigned short port;
   unsigned char type;
   unsigned char flags;
-} ACCOUNT;
+};
 
-int mutt_account_match (const ACCOUNT* a1, const ACCOUNT* m2);
-int mutt_account_fromurl (ACCOUNT* account, ciss_url_t* url);
-void mutt_account_tourl (ACCOUNT* account, ciss_url_t* url);
-int mutt_account_getuser (ACCOUNT* account);
-int mutt_account_getlogin (ACCOUNT* account);
-int mutt_account_getpass (ACCOUNT* account);
-void mutt_account_unsetpass (ACCOUNT* account);
+int mutt_account_match(const struct Account *a1, const struct Account *m2);
+int mutt_account_fromurl(struct Account *account, struct Url *url);
+void mutt_account_tourl(struct Account *account, struct Url *url);
+int mutt_account_getuser(struct Account *account);
+int mutt_account_getlogin(struct Account *account);
+int mutt_account_getpass(struct Account *account);
+void mutt_account_unsetpass(struct Account *account);
 
-#endif /* _MUTT_ACCOUNT_H_ */
+#endif /* _MUTT_ACCOUNT_H */

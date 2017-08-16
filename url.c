@@ -1,59 +1,57 @@
-/*
+/**
+ * @file
+ * Parse and identify different URL schemes
+ *
+ * @authors
  * Copyright (C) 2000-2002,2004 Thomas Roessler <roessler@does-not-exist.org>
- * 
- *     This program is free software; you can redistribute it and/or modify
- *     it under the terms of the GNU General Public License as published by
- *     the Free Software Foundation; either version 2 of the License, or
- *     (at your option) any later version.
- * 
- *     This program is distributed in the hope that it will be useful,
- *     but WITHOUT ANY WARRANTY; without even the implied warranty of
- *     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *     GNU General Public License for more details.
- * 
- *     You should have received a copy of the GNU General Public License
- *     along with this program; if not, write to the Free Software
- *     Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
- */ 
+ *
+ * @copyright
+ * This program is free software: you can redistribute it and/or modify it under
+ * the terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 2 of the License, or (at your option) any later
+ * version.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+ * FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+ * details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 /*
  * A simple URL parser.
  */
 
-#if HAVE_CONFIG_H
-# include "config.h"
-#endif
-
-#include "mutt.h"
-#include "mapping.h"
-#include "url.h"
-
-#include "mime.h"
-#include "rfc2047.h"
-
+#include "config.h"
 #include <ctype.h>
+#include <stdio.h>
+#include <string.h>
+#include "mutt.h"
+#include "url.h"
+#include "envelope.h"
+#include "globals.h"
+#include "lib/lib.h"
+#include "mapping.h"
+#include "mime.h"
+#include "protos.h"
+#include "rfc2047.h"
+#include "rfc822.h"
 
-static const struct mapping_t UrlMap[] =
-{
-  { "file", 	U_FILE },
-  { "imap", 	U_IMAP },
-  { "imaps", 	U_IMAPS },
-  { "pop",  	U_POP },
-  { "pops", 	U_POPS },
-  { "news",	U_NNTP },
-  { "snews",	U_NNTPS },
-  { "mailto",	U_MAILTO },
+static const struct Mapping UrlMap[] = {
+  { "file", U_FILE },       { "imap", U_IMAP },     { "imaps", U_IMAPS },
+  { "pop", U_POP },         { "pops", U_POPS },     { "news", U_NNTP },
+  { "snews", U_NNTPS },     { "mailto", U_MAILTO },
 #ifdef USE_NOTMUCH
-  { "notmuch",  U_NOTMUCH },
+  { "notmuch", U_NOTMUCH },
 #endif
-  { "smtp",     U_SMTP },
-  { "smtps",    U_SMTPS },
-  { NULL,	U_UNKNOWN }
+  { "smtp", U_SMTP },       { "smtps", U_SMTPS },   { NULL, U_UNKNOWN },
 };
 
-int url_pct_decode (char *s)
+int url_pct_decode(char *s)
 {
-  char *d;
+  char *d = NULL;
 
   if (!s)
     return -1;
@@ -62,91 +60,81 @@ int url_pct_decode (char *s)
   {
     if (*s == '%')
     {
-      if (s[1] && s[2] &&
-	  isxdigit ((unsigned char) s[1]) &&
-	  isxdigit ((unsigned char) s[2]) &&
-	  hexval (s[1]) >= 0 && hexval (s[2]) >= 0)
+      if (s[1] && s[2] && isxdigit((unsigned char) s[1]) &&
+          isxdigit((unsigned char) s[2]) && hexval(s[1]) >= 0 && hexval(s[2]) >= 0)
       {
-	*d++ = (hexval (s[1]) << 4) | (hexval (s[2]));
-	s += 2;
+        *d++ = (hexval(s[1]) << 4) | (hexval(s[2]));
+        s += 2;
       }
       else
-	return -1;
-    } else
+        return -1;
+    }
+    else
       *d++ = *s;
   }
-  *d ='\0';
+  *d = '\0';
   return 0;
 }
 
-url_scheme_t url_check_scheme (const char *s)
+enum UrlScheme url_check_scheme(const char *s)
 {
   char sbuf[STRING];
-  char *t;
+  char *t = NULL;
   int i;
 
-  if (!s || !(t = strchr (s, ':')))
+  if (!s || !(t = strchr(s, ':')))
     return U_UNKNOWN;
-  if ((size_t)(t - s) >= sizeof (sbuf) - 1)
+  if ((size_t)(t - s) >= sizeof(sbuf) - 1)
     return U_UNKNOWN;
 
-  strfcpy (sbuf, s, t - s + 1);
+  strfcpy(sbuf, s, t - s + 1);
   for (t = sbuf; *t; t++)
-    *t = tolower (*t);
+    *t = tolower(*t);
 
-  if ((i = mutt_getvaluebyname (sbuf, UrlMap)) == -1)
+  if ((i = mutt_getvaluebyname(sbuf, UrlMap)) == -1)
     return U_UNKNOWN;
   else
-    return (url_scheme_t) i;
+    return (enum UrlScheme) i;
 }
 
-int url_parse_file (char *d, const char *src, size_t dl)
+/**
+ * parse_userhost - fill in components of Url with info from src
+ *
+ * Note: These are pointers into src, which is altered with '\0's.
+ *       Port of 0 means no port given.
+ */
+static int parse_userhost(struct Url *u, char *src)
 {
-  if (ascii_strncasecmp (src, "file:", 5))
-    return -1;
-  else if (!ascii_strncasecmp (src, "file://", 7))	/* we don't support remote files */
-    return -1;
-  else
-    strfcpy (d, src + 5, dl);
+  char *t = NULL, *p = NULL;
 
-  return url_pct_decode (d);
-}
+  u->user = NULL;
+  u->pass = NULL;
+  u->host = NULL;
+  u->port = 0;
 
-/* ciss_parse_userhost: fill in components of ciss with info from src. Note
- *   these are pointers into src, which is altered with '\0's. Port of 0
- *   means no port given. */
-static int ciss_parse_userhost (ciss_url_t *ciss, char *src)
-{
-  char *t, *p;
-
-  ciss->user = NULL;
-  ciss->pass = NULL;
-  ciss->host = NULL;
-  ciss->port = 0;
-
-  if (strncmp (src, "//", 2) != 0)
+  if (strncmp(src, "//", 2) != 0)
   {
-    ciss->path = src;
-    return url_pct_decode (ciss->path);
+    u->path = src;
+    return url_pct_decode(u->path);
   }
 
   src += 2;
 
-  if ((ciss->path = strchr (src, '/')))
-    *ciss->path++ = '\0';
+  if ((u->path = strchr(src, '/')))
+    *u->path++ = '\0';
 
-  if ((t = strrchr (src, '@')))
+  if ((t = strrchr(src, '@')))
   {
     *t = '\0';
-    if ((p = strchr (src, ':')))
+    if ((p = strchr(src, ':')))
     {
       *p = '\0';
-      ciss->pass = p + 1;
-      if (url_pct_decode (ciss->pass) < 0)
-	return -1;
+      u->pass = p + 1;
+      if (url_pct_decode(u->pass) < 0)
+        return -1;
     }
-    ciss->user = src;
-    if (url_pct_decode (ciss->user) < 0)
+    u->user = src;
+    if (url_pct_decode(u->user) < 0)
       return -1;
     src = t + 1;
   }
@@ -154,7 +142,7 @@ static int ciss_parse_userhost (ciss_url_t *ciss, char *src)
   /* IPv6 literal address.  It may contain colons, so set t to start
    * the port scan after it.
    */
-  if ((*src == '[') && (t = strchr (src, ']')))
+  if ((*src == '[') && (t = strchr(src, ']')))
   {
     src++;
     *t++ = '\0';
@@ -162,37 +150,40 @@ static int ciss_parse_userhost (ciss_url_t *ciss, char *src)
   else
     t = src;
 
-  if ((p = strchr (t, ':')))
+  if ((p = strchr(t, ':')))
   {
-    int t;
+    int num;
     *p++ = '\0';
-    if (mutt_atoi (p, &t) < 0 || t < 0 || t > 0xffff)
+    if (mutt_atoi(p, &num) < 0 || num < 0 || num > 0xffff)
       return -1;
-    ciss->port = (unsigned short)t;
+    u->port = (unsigned short) num;
   }
   else
-    ciss->port = 0;
+    u->port = 0;
 
-  ciss->host = src;
-  return url_pct_decode (ciss->host) >= 0 &&
-    (!ciss->path || url_pct_decode (ciss->path) >= 0) ? 0 : -1;
+  u->host = src;
+  return url_pct_decode(u->host) >= 0 && (!u->path || url_pct_decode(u->path) >= 0) ? 0 : -1;
 }
 
-/* url_parse_ciss: Fill in ciss_url_t. char* elements are pointers into src,
- *   which is modified by this call (duplicate it first if you need to). */
-int url_parse_ciss (ciss_url_t *ciss, char *src)
+/**
+ * url_parse - Fill in Url
+ *
+ * char* elements are pointers into src, which is modified by this call
+ * (duplicate it first if you need to).
+ */
+int url_parse(struct Url *u, char *src)
 {
-  char *tmp;
+  char *tmp = NULL;
 
-  if ((ciss->scheme = url_check_scheme (src)) == U_UNKNOWN)
+  if ((u->scheme = url_check_scheme(src)) == U_UNKNOWN)
     return -1;
 
-  tmp = strchr (src, ':') + 1;
+  tmp = strchr(src, ':') + 1;
 
-  return ciss_parse_userhost (ciss, tmp);
+  return parse_userhost(u, tmp);
 }
 
-static void url_pct_encode (char *dst, size_t l, const char *src)
+void url_pct_encode(char *dst, size_t l, const char *src)
 {
   static const char *alph = "0123456789ABCDEF";
 
@@ -200,7 +191,7 @@ static void url_pct_encode (char *dst, size_t l, const char *src)
   l--;
   while (src && *src && l)
   {
-    if (strchr ("/:%", *src) && l > 3)
+    if (strchr("/:&%", *src) && l > 3)
     {
       *dst++ = '%';
       *dst++ = alph[(*src >> 4) & 0xf];
@@ -213,96 +204,99 @@ static void url_pct_encode (char *dst, size_t l, const char *src)
   *dst = 0;
 }
 
-/* url_ciss_tostring: output the URL string for a given CISS object. */
-int url_ciss_tostring (ciss_url_t* ciss, char* dest, size_t len, int flags)
+/**
+ * url_tostring - output the URL string for a given Url object
+ */
+int url_tostring(struct Url *u, char *dest, size_t len, int flags)
 {
   long l;
 
-  if (ciss->scheme == U_UNKNOWN)
+  if (u->scheme == U_UNKNOWN)
     return -1;
 
-  snprintf (dest, len, "%s:", mutt_getnamebyvalue (ciss->scheme, UrlMap));
+  snprintf(dest, len, "%s:", mutt_getnamebyvalue(u->scheme, UrlMap));
 
-  if (ciss->host)
+  if (u->host)
   {
     if (!(flags & U_PATH))
-      safe_strcat (dest, len, "//");
-    len -= (l = strlen (dest)); dest += l;
+      safe_strcat(dest, len, "//");
+    len -= (l = strlen(dest));
+    dest += l;
 
-    if (ciss->user && (ciss->user[0] || !(flags & U_PATH)))
+    if (u->user && (u->user[0] || !(flags & U_PATH)))
     {
-      char u[STRING];
-      url_pct_encode (u, sizeof (u), ciss->user);
+      char str[STRING];
+      url_pct_encode(str, sizeof(str), u->user);
 
-      if (flags & U_DECODE_PASSWD && ciss->pass)
+      if (flags & U_DECODE_PASSWD && u->pass)
       {
-	char p[STRING];
-	url_pct_encode (p, sizeof (p), ciss->pass);
-	snprintf (dest, len, "%s:%s@", u, p);
+        char p[STRING];
+        url_pct_encode(p, sizeof(p), u->pass);
+        snprintf(dest, len, "%s:%s@", str, p);
       }
       else
-	snprintf (dest, len, "%s@", u);
+        snprintf(dest, len, "%s@", str);
 
-      len -= (l = strlen (dest)); dest += l;
+      len -= (l = strlen(dest));
+      dest += l;
     }
 
-    if (strchr (ciss->host, ':'))
-      snprintf (dest, len, "[%s]", ciss->host);
+    if (strchr(u->host, ':'))
+      snprintf(dest, len, "[%s]", u->host);
     else
-      snprintf (dest, len, "%s", ciss->host);
+      snprintf(dest, len, "%s", u->host);
 
-    len -= (l = strlen (dest)); dest += l;
+    len -= (l = strlen(dest));
+    dest += l;
 
-    if (ciss->port)
-      snprintf (dest, len, ":%hu/", ciss->port);
+    if (u->port)
+      snprintf(dest, len, ":%hu/", u->port);
     else
-      snprintf (dest, len, "/");
+      snprintf(dest, len, "/");
   }
 
-  if (ciss->path)
-    safe_strcat (dest, len, ciss->path);
+  if (u->path)
+    safe_strcat(dest, len, u->path);
 
   return 0;
 }
 
-int url_parse_mailto (ENVELOPE *e, char **body, const char *src)
+int url_parse_mailto(struct Envelope *e, char **body, const char *src)
 {
-  char *t, *p;
-  char *tmp;
-  char *headers;
-  char *tag, *value;
+  char *t = NULL, *p = NULL;
+  char *tmp = NULL;
+  char *headers = NULL;
+  char *tag = NULL, *value = NULL;
 
   int rc = -1;
 
-  LIST *last = NULL;
-
-  if (!(t = strchr (src, ':')))
+  if (!(t = strchr(src, ':')))
     return -1;
 
   /* copy string for safe use of strtok() */
-  if ((tmp = safe_strdup (t + 1)) == NULL)
+  if ((tmp = safe_strdup(t + 1)) == NULL)
     return -1;
 
-  if ((headers = strchr (tmp, '?')))
+  if ((headers = strchr(tmp, '?')))
     *headers++ = '\0';
 
-  if (url_pct_decode (tmp) < 0)
+  if (url_pct_decode(tmp) < 0)
     goto out;
 
-  e->to = rfc822_parse_adrlist (e->to, tmp);
+  e->to = rfc822_parse_adrlist(e->to, tmp);
 
-  tag = headers ? strtok_r (headers, "&", &p) : NULL;
+  tag = headers ? strtok_r(headers, "&", &p) : NULL;
 
-  for (; tag; tag = strtok_r (NULL, "&", &p))
+  for (; tag; tag = strtok_r(NULL, "&", &p))
   {
-    if ((value = strchr (tag, '=')))
+    if ((value = strchr(tag, '=')))
       *value++ = '\0';
     if (!value || !*value)
       continue;
 
-    if (url_pct_decode (tag) < 0)
+    if (url_pct_decode(tag) < 0)
       goto out;
-    if (url_pct_decode (value) < 0)
+    if (url_pct_decode(value) < 0)
       goto out;
 
     /* Determine if this header field is on the allowed list.  Since Mutt
@@ -316,43 +310,42 @@ int url_parse_mailto (ENVELOPE *e, char **body, const char *src)
      * choose to create a message with only a subset of the headers given in
      * the URL.
      */
-    if (mutt_matches_list (tag, MailtoAllow))
+    if (mutt_list_match(tag, &MailToAllow))
     {
-      if (!ascii_strcasecmp (tag, "body"))
+      if (mutt_strcasecmp(tag, "body") == 0)
       {
-	if (body)
-	  mutt_str_replace (body, value);
+        if (body)
+          mutt_str_replace(body, value);
       }
       else
       {
-	char *scratch;
-	size_t taglen = mutt_strlen (tag);
+        char *scratch = NULL;
+        size_t taglen = mutt_strlen(tag);
 
-	safe_asprintf (&scratch, "%s: %s", tag, value);
-	scratch[taglen] = 0; /* overwrite the colon as mutt_parse_rfc822_line expects */
-	value = skip_email_wsp(&scratch[taglen + 1]);
-	mutt_parse_rfc822_line (e, NULL, scratch, value, 1, 0, 1, &last);
-	FREE (&scratch);
+        safe_asprintf(&scratch, "%s: %s", tag, value);
+        scratch[taglen] = 0; /* overwrite the colon as mutt_parse_rfc822_line expects */
+        value = skip_email_wsp(&scratch[taglen + 1]);
+        mutt_parse_rfc822_line(e, NULL, scratch, value, 1, 0, 1);
+        FREE(&scratch);
       }
     }
   }
 
   /* RFC2047 decode after the RFC822 parsing */
-  rfc2047_decode_adrlist (e->from);
-  rfc2047_decode_adrlist (e->to);
-  rfc2047_decode_adrlist (e->cc);
-  rfc2047_decode_adrlist (e->bcc);
-  rfc2047_decode_adrlist (e->reply_to);
-  rfc2047_decode_adrlist (e->mail_followup_to);
-  rfc2047_decode_adrlist (e->return_path);
-  rfc2047_decode_adrlist (e->sender);
-  rfc2047_decode (&e->x_label);
-  rfc2047_decode (&e->subject);
+  rfc2047_decode_adrlist(e->from);
+  rfc2047_decode_adrlist(e->to);
+  rfc2047_decode_adrlist(e->cc);
+  rfc2047_decode_adrlist(e->bcc);
+  rfc2047_decode_adrlist(e->reply_to);
+  rfc2047_decode_adrlist(e->mail_followup_to);
+  rfc2047_decode_adrlist(e->return_path);
+  rfc2047_decode_adrlist(e->sender);
+  rfc2047_decode(&e->x_label);
+  rfc2047_decode(&e->subject);
 
   rc = 0;
 
 out:
-  FREE (&tmp);
+  FREE(&tmp);
   return rc;
 }
-

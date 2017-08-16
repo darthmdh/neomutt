@@ -1,29 +1,36 @@
-/*
+/**
+ * @file
+ * GUI component for displaying/selecting items from a list
+ *
+ * @authors
  * Copyright (C) 1996-2000 Michael R. Elkins <me@mutt.org>
- * 
- *     This program is free software; you can redistribute it and/or modify
- *     it under the terms of the GNU General Public License as published by
- *     the Free Software Foundation; either version 2 of the License, or
- *     (at your option) any later version.
- * 
- *     This program is distributed in the hope that it will be useful,
- *     but WITHOUT ANY WARRANTY; without even the implied warranty of
- *     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *     GNU General Public License for more details.
- * 
- *     You should have received a copy of the GNU General Public License
- *     along with this program; if not, write to the Free Software
- *     Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
- */ 
+ *
+ * @copyright
+ * This program is free software: you can redistribute it and/or modify it under
+ * the terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 2 of the License, or (at your option) any later
+ * version.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+ * FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+ * details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
-#ifndef _BROWSER_H
-#define _BROWSER_H 1
+#ifndef _MUTT_BROWSER_H
+#define _MUTT_BROWSER_H
 
-#ifdef USE_NNTP
-#include "nntp.h"
-#endif
+#include <stdbool.h>
+#include <sys/types.h>
+#include <time.h>
 
-struct folder_file
+/**
+ * struct FolderFile - Browser entry representing a folder/dir
+ */
+struct FolderFile
 {
   mode_t mode;
   off_t size;
@@ -35,36 +42,40 @@ struct folder_file
   char *name;
   char *desc;
 
-  short new;               /* true if mailbox has "new mail" */
-  int msg_count;           /* total number of messages */
-  int msg_unread;          /* number of unread messages */
+  bool new;       /**< true if mailbox has "new mail" */
+  int msg_count;  /**< total number of messages */
+  int msg_unread; /**< number of unread messages */
 
 #ifdef USE_IMAP
   char delim;
 
-  unsigned imap : 1;
-  unsigned selectable : 1;
-  unsigned inferiors : 1;
+  bool imap : 1;
+  bool selectable : 1;
+  bool inferiors : 1;
 #endif
-  unsigned has_buffy : 1;
+  bool has_buffy : 1;
 #ifdef USE_NNTP
-  NNTP_DATA *nd;
+  struct NntpData *nd;
 #endif
-  unsigned local : 1; /* folder is on local filesystem */
-  unsigned tagged : 1;
+  bool local : 1; /**< folder is on local filesystem */
+  bool tagged : 1;
 };
 
-struct browser_state
+/**
+ * struct BrowserState - State of the file/mailbox browser
+ */
+struct BrowserState
 {
-  struct folder_file *entry;
-  unsigned int entrylen;	/* number of real entries */
-  unsigned int entrymax;	/* max entry */
+  struct FolderFile *entry;
+  unsigned int entrylen; /**< number of real entries */
+  unsigned int entrymax; /**< max entry */
 #ifdef USE_IMAP
-  short imap_browse;
+  bool imap_browse;
   char *folder;
-  unsigned noselect : 1;
-  unsigned marked : 1;
-  unsigned unmarked : 1;
+  bool noselect : 1;
+  bool marked : 1;
+  bool unmarked : 1;
 #endif
 };
-#endif /* _BROWSER_H */
+
+#endif /* _MUTT_BROWSER_H */

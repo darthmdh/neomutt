@@ -3,17 +3,17 @@
 .\"
 .\"     Copyright (C) 1996-2000 Michael R. Elkins <me@cs.hmc.edu>
 .\"	Copyright (C) 1999-2000 Thomas Roessler <roessler@does-not-exist.org>
-.\" 
+.\"
 .\"     This program is free software; you can redistribute it and/or modify
 .\"     it under the terms of the GNU General Public License as published by
 .\"     the Free Software Foundation; either version 2 of the License, or
 .\"     (at your option) any later version.
-.\" 
+.\"
 .\"     This program is distributed in the hope that it will be useful,
 .\"     but WITHOUT ANY WARRANTY; without even the implied warranty of
 .\"     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 .\"     GNU General Public License for more details.
-.\" 
+.\"
 .\"     You should have received a copy of the GNU General Public License
 .\"     along with this program; if not, write to the Free Software
 .\"     Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
@@ -142,11 +142,11 @@ as an argument.
 .IP
 This commands permits you to specify that mutt should automatically
 convert the given MIME types to text/plain when displaying messages.
-For this to work, there must be a 
+For this to work, there must be a
 .BR mailcap (5)
-entry for the given MIME type with the 
+entry for the given MIME type with the
 .B copiousoutput
-flag set.  A subtype of \(lq\fB*\fP\(rq 
+flag set.  A subtype of \(lq\fB*\fP\(rq
 matches any subtype, as does an empty subtype.
 .PP
 .nf
@@ -156,7 +156,7 @@ matches any subtype, as does an empty subtype.
 .IP
 This command permits you to define a list of "data" MIME content
 types for which mutt will try to determine the actual file type from
-the file name, and not use a 
+the file name, and not use a
 .BR mailcap (5)
 entry given for the original MIME type.  For instance, you may add
 the \fBapplication/octet-stream\fP MIME type to this list.
@@ -167,9 +167,9 @@ to the given \fIfunction\fP. Multiple maps may be specified by
 separating them with commas (no whitespace is allowed).
 .IP
 Valid maps are:
-.BR generic ", " alias ", " attach ", " 
+.BR generic ", " alias ", " attach ", "
 .BR browser ", " editor ", "
-.BR index ", " compose ", " 
+.BR index ", " compose ", "
 .BR pager ", " pgp ", " postpone ", "
 .BR mix .
 .IP
@@ -188,9 +188,9 @@ name not known to mutt.
 .TP
 \fBiconv-hook\fP \fIcharset\fP \fIlocal-charset\fP
 This command defines a system-specific name for a character set.
-This is useful when your system's 
+This is useful when your system's
 .BR iconv (3)
-implementation does not understand MIME character set names (such as 
+implementation does not understand MIME character set names (such as
 .BR iso-8859-1 ),
 but instead insists on being fed with implementation-specific
 character set names (such as
@@ -233,19 +233,22 @@ This command binds the given \fIsequence\fP of keys to the given
 specify multiple maps, put only a comma between the maps.
 .PP
 .nf
-\fBcolor\fP \fIobject\fP \fIforeground\fP \fIbackground\fP [ \fI regexp\fP ]
-\fBcolor\fP index \fIforeground\fP \fIbackground\fP [ \fI pattern\fP ]
+\fBcolor\fP \fIobject\fP \fIforeground\fP \fIbackground\fP [ \fIregexp\fP ]
+\fBcolor\fP index \fIforeground\fP \fIbackground\fP [ \fIpattern\fP ]
 \fBuncolor\fP index \fIpattern\fP [ \fIpattern\fP ... ]
 .fi
 .IP
 If your terminal supports color, these commands can be used to
 assign \fIforeground\fP/\fIbackground\fP combinations to certain
 objects.  Valid objects are:
-.BR attachment ", " body ", " bold ", " header ", "
+.BR attachment ", " body ", " bold ", " error ", " header ", "
 .BR hdrdefault ", " index ", " indicator ", " markers ", "
-.BR message ", " normal ", " quoted ", " quoted\fIN\fP ", "
+.BR message ", " normal ", " prompt ", " quoted ", " quoted\fIN\fP ", "
 .BR search ", " signature ", " status ", " tilde ", " tree ", "
-.BR underline ", " prompt .
+.BR underline .
+If the sidebar is enabled the following objects are also valid:
+.BR sidebar_divider ", " sidebar_flagged ", " sidebar_highlight ", "
+.BR sidebar_indicator ", " sidebar_new ", " sidebar_spoolfile .
 The
 .BR body " and " header
 objects allow you to restrict the colorization to a regular
@@ -263,7 +266,7 @@ Valid colors include:
 .IP
 For terminals which don't support color, you can still assign
 attributes to objects.  Valid attributes include:
-.BR none ", " bold ", " underline ", " 
+.BR none ", " bold ", " underline ", "
 .BR reverse ", and " standout .
 .TP
 [\fBun\fP]\fBignore\fP \fIpattern\fP [ \fIpattern\fP ... ]
@@ -450,8 +453,10 @@ can be any of the \fB-hook\fP commands documented above.
 .IP
 These commands allow the user to modify the list of allowed header
 fields in a \fImailto:\fP URL that Mutt will include in the
-the generated message.  By default the list contains only
-\fBsubject\fP and \fBbody\fP, as specified by RFC2368.
+the generated message.  By default the list contains
+\fBsubject\fP and \fBbody\fP, as specified by RFC2368; and
+\fBcc\fP, \fBin-reply-to\fP, and \fBreferences\fP to aid with
+mailto links from mailing lists.
 .SH PATTERNS
 .PP
 In various places with mutt, including some of the above mentioned
@@ -631,6 +636,12 @@ unreferenced message (requires threaded view)
 .TP
 ~(PATTERN)
 messages in threads containing messages matching a certain pattern, e.g. all threads containing messages from you: ~(~P)
+.TP
+~<(PATTERN)
+messages whose immediate parent matches PATTERN, e.g. replies to your messages: ~<(~P)
+.TP
+~>(PATTERN)
+messages having an immediate child matching PATTERN, e.g. messages you replied to: ~>(~P)
 .PD 1
 .DT
 .PP
@@ -681,10 +692,10 @@ characters
 .BR m ,
 .BR w ", or"
 .BR d ,
-specifying a unit of years, months, weeks, or days.  
+specifying a unit of years, months, weeks, or days.
 .B +
 increases the maximum date matched by the given interval of time,
-.B - 
+.B -
 decreases the minimum date matched by the given interval of time, and
 .B *
 increases the maximum date and decreases the minimum date matched by
@@ -706,7 +717,7 @@ characters
 .B >
 matches dates which are older than the specified amount of time, an
 offset which begins with the character
-.B < 
+.B <
 matches dates which are more recent than the specified amount of time,
 and an offset which begins with the character
 .B =

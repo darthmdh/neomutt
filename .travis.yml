@@ -5,7 +5,7 @@ notifications:
     on_success: change
     on_failure: always
 
-sudo: required
+sudo: false
 dist: trusty
 
 language: c
@@ -34,6 +34,9 @@ addons:
       - docbook-xsl
       - libxml2-utils
       - gettext
+      - lua5.2
+      - liblua5.2-dev
+      - autopoint
 
 git:
   depth: 3

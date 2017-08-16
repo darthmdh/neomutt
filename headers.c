@@ -1,441 +1,326 @@
-/* 
+/**
+ * @file
+ * Manipulate an email's header
+ *
+ * @authors
  * Copyright (C) 1996-2009,2012 Michael R. Elkins <me@mutt.org>
- * 
- *     This program is free software; you can redistribute it and/or modify
- *     it under the terms of the GNU General Public License as published by
- *     the Free Software Foundation; either version 2 of the License, or
- *     (at your option) any later version.
- * 
- *     This program is distributed in the hope that it will be useful,
- *     but WITHOUT ANY WARRANTY; without even the implied warranty of
- *     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *     GNU General Public License for more details.
- * 
- *     You should have received a copy of the GNU General Public License
- *     along with this program; if not, write to the Free Software
- *     Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+ *
+ * @copyright
+ * This program is free software: you can redistribute it and/or modify it under
+ * the terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 2 of the License, or (at your option) any later
+ * version.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+ * FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+ * details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#if HAVE_CONFIG_H
-# include "config.h"
-#endif
-
-#include "mutt.h"
-#include "mutt_crypt.h"
-#include "mutt_idna.h"
-
-#include <sys/stat.h>
-#include <string.h>
+#include "config.h"
 #include <ctype.h>
+#include <limits.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <sys/stat.h>
+#include <time.h>
+#include "mutt.h"
+#include "alias.h"
+#include "body.h"
+#include "context.h"
+#include "envelope.h"
+#include "globals.h"
+#include "header.h"
+#include "lib/lib.h"
+#include "list.h"
+#include "mutt_idna.h"
+#include "ncrypt/ncrypt.h"
+#include "options.h"
+#include "protos.h"
 
-/* The labels are used as keys in the Labels hash.
- * The keys must have a longer lifespan than the hash.
- */
-static LIST *LabelList = NULL;
-
-void mutt_edit_headers (const char *editor,
-			const char *body,
-			HEADER *msg,
-			char *fcc,
-			size_t fcclen)
+void mutt_edit_headers(const char *editor, const char *body, struct Header *msg,
+                       char *fcc, size_t fcclen)
 {
-  char path[_POSIX_PATH_MAX];	/* tempfile used to edit headers + body */
+  char path[_POSIX_PATH_MAX]; /* tempfile used to edit headers + body */
   char buffer[LONG_STRING];
-  const char *p;
-  FILE *ifp, *ofp;
-  int i, keep;
-  ENVELOPE *n;
+  const char *p = NULL;
+  FILE *ifp = NULL, *ofp = NULL;
+  int i;
+  bool keep;
+  struct Envelope *n = NULL;
   time_t mtime;
   struct stat st;
-  LIST *cur, **last = NULL, *tmp;
 
-  mutt_mktemp (path, sizeof (path));
-  if ((ofp = safe_fopen (path, "w")) == NULL)
+  mutt_mktemp(path, sizeof(path));
+  if ((ofp = safe_fopen(path, "w")) == NULL)
   {
-    mutt_perror (path);
+    mutt_perror(path);
     return;
   }
-  
-  mutt_env_to_local (msg->env);
-  mutt_write_rfc822_header (ofp, msg->env, NULL, 1, 0);
-  fputc ('\n', ofp);	/* tie off the header. */
+
+  mutt_env_to_local(msg->env);
+  mutt_write_rfc822_header(ofp, msg->env, NULL, 1, 0);
+  fputc('\n', ofp); /* tie off the header. */
 
   /* now copy the body of the message. */
-  if ((ifp = fopen (body, "r")) == NULL)
+  if ((ifp = fopen(body, "r")) == NULL)
   {
-    mutt_perror (body);
+    mutt_perror(body);
+    safe_fclose(&ofp);
     return;
   }
 
-  mutt_copy_stream (ifp, ofp);
+  mutt_copy_stream(ifp, ofp);
 
-  safe_fclose (&ifp);
-  safe_fclose (&ofp);
+  safe_fclose(&ifp);
+  safe_fclose(&ofp);
 
-  if (stat (path, &st) == -1)
+  if (stat(path, &st) == -1)
   {
-    mutt_perror (path);
+    mutt_perror(path);
     return;
   }
 
-  mtime = mutt_decrease_mtime (path, &st);
+  mtime = mutt_decrease_mtime(path, &st);
 
-  mutt_edit_file (editor, path);
-  stat (path, &st);
+  mutt_edit_file(editor, path);
+  stat(path, &st);
   if (mtime == st.st_mtime)
   {
-    dprint (1, (debugfile, "ci_edit_headers(): temp file was not modified.\n"));
+    mutt_debug(1, "ci_edit_headers(): temp file was not modified.\n");
     /* the file has not changed! */
-    mutt_unlink (path);
+    mutt_unlink(path);
     return;
   }
 
-  mutt_unlink (body);
-  mutt_free_list (&msg->env->userhdrs);
+  mutt_unlink(body);
+  mutt_list_free(&msg->env->userhdrs);
 
   /* Read the temp file back in */
-  if ((ifp = fopen (path, "r")) == NULL)
+  if ((ifp = fopen(path, "r")) == NULL)
   {
-    mutt_perror (path);
+    mutt_perror(path);
     return;
   }
-  
-  if ((ofp = safe_fopen (body, "w")) == NULL)
+
+  if ((ofp = safe_fopen(body, "w")) == NULL)
   {
     /* intentionally leak a possible temporary file here */
-    safe_fclose (&ifp);
-    mutt_perror (body);
+    safe_fclose(&ifp);
+    mutt_perror(body);
     return;
   }
-  
-  n = mutt_read_rfc822_header (ifp, NULL, 1, 0);
-  while ((i = fread (buffer, 1, sizeof (buffer), ifp)) > 0)
-    fwrite (buffer, 1, i, ofp);
-  safe_fclose (&ofp);
-  safe_fclose (&ifp);
-  mutt_unlink (path);
 
-  /* in case the user modifies/removes the In-Reply-To header with
+  n = mutt_read_rfc822_header(ifp, NULL, 1, 0);
+  while ((i = fread(buffer, 1, sizeof(buffer), ifp)) > 0)
+    fwrite(buffer, 1, i, ofp);
+  safe_fclose(&ofp);
+  safe_fclose(&ifp);
+  mutt_unlink(path);
+
+/* in case the user modifies/removes the In-Reply-To header with
      $edit_headers set, we remove References: as they're likely invalid;
      we can simply compare strings as we don't generate References for
      multiple Message-Ids in IRT anyways */
 #ifdef USE_NNTP
-  if (!option (OPTNEWSSEND))
+  if (!option(OPT_NEWS_SEND))
 #endif
-  if (msg->env->in_reply_to &&
-      (!n->in_reply_to || mutt_strcmp (n->in_reply_to->data,
-				       msg->env->in_reply_to->data) != 0))
-    mutt_free_list (&msg->env->references);
+    if (!STAILQ_EMPTY(&msg->env->in_reply_to) &&
+        (STAILQ_EMPTY(&n->in_reply_to) ||
+         (mutt_strcmp(STAILQ_FIRST(&n->in_reply_to)->data,
+                      STAILQ_FIRST(&msg->env->in_reply_to)->data) != 0)))
+      mutt_list_free(&msg->env->references);
 
   /* restore old info. */
-  mutt_free_list (&n->references);
-  n->references = msg->env->references;
-  msg->env->references = NULL;
+  mutt_list_free(&n->references);
+  STAILQ_SWAP(&n->references, &msg->env->references, ListNode);
 
-  mutt_free_envelope (&msg->env);
-  msg->env = n; n = NULL;
+  mutt_free_envelope(&msg->env);
+  msg->env = n;
+  n = NULL;
 
-  mutt_expand_aliases_env (msg->env);
+  mutt_expand_aliases_env(msg->env);
 
-  /* search through the user defined headers added to see if 
+  /* search through the user defined headers added to see if
    * fcc: or attach: or pgp: was specified
    */
 
-  cur = msg->env->userhdrs;
-  last = &msg->env->userhdrs;
-  while (cur)
+  struct ListNode *np, *tmp;
+  STAILQ_FOREACH_SAFE(np, &msg->env->userhdrs, entries, tmp)
   {
-    keep = 1;
+    keep = true;
 
-    if (fcc && ascii_strncasecmp ("fcc:", cur->data, 4) == 0)
+    if (fcc && (mutt_strncasecmp("fcc:", np->data, 4) == 0))
     {
-      p = skip_email_wsp(cur->data + 4);
+      p = skip_email_wsp(np->data + 4);
       if (*p)
       {
-	strfcpy (fcc, p, fcclen);
-	mutt_pretty_mailbox (fcc, fcclen);
+        strfcpy(fcc, p, fcclen);
+        mutt_pretty_mailbox(fcc, fcclen);
       }
-      keep = 0;
+      keep = false;
     }
-    else if (ascii_strncasecmp ("attach:", cur->data, 7) == 0)
+    else if (mutt_strncasecmp("attach:", np->data, 7) == 0)
     {
-      BODY *body;
-      BODY *parts;
+      struct Body *body2 = NULL;
+      struct Body *parts = NULL;
       size_t l = 0;
 
-      p = skip_email_wsp(cur->data + 7);
+      p = skip_email_wsp(np->data + 7);
       if (*p)
       {
-	for ( ; *p && *p != ' ' && *p != '\t'; p++)
-	{
-	  if (*p == '\\')
-	  {
-	    if (!*(p+1))
-	      break;
-	    p++;
-	  }
-	  if (l < sizeof (path) - 1)
-	    path[l++] = *p;
-	}
-	p = skip_email_wsp(p);
-	path[l] = 0;
+        for (; *p && *p != ' ' && *p != '\t'; p++)
+        {
+          if (*p == '\\')
+          {
+            if (!*(p + 1))
+              break;
+            p++;
+          }
+          if (l < sizeof(path) - 1)
+            path[l++] = *p;
+        }
+        p = skip_email_wsp(p);
+        path[l] = 0;
 
-	mutt_expand_path (path, sizeof (path));
-	if ((body = mutt_make_file_attach (path)))
-	{
-	  body->description = safe_strdup (p);
-	  for (parts = msg->content; parts->next; parts = parts->next) ;
-	  parts->next = body;
-	}
-	else
-	{
-	  mutt_pretty_mailbox (path, sizeof (path));
-	  mutt_error (_("%s: unable to attach file"), path);
-	}
+        mutt_expand_path(path, sizeof(path));
+        if ((body2 = mutt_make_file_attach(path)))
+        {
+          body2->description = safe_strdup(p);
+          for (parts = msg->content; parts->next; parts = parts->next)
+            ;
+          parts->next = body2;
+        }
+        else
+        {
+          mutt_pretty_mailbox(path, sizeof(path));
+          mutt_error(_("%s: unable to attach file"), path);
+        }
       }
-      keep = 0;
+      keep = false;
     }
-    else if ((WithCrypto & APPLICATION_PGP)
-             && ascii_strncasecmp ("pgp:", cur->data, 4) == 0)
+    else if ((WithCrypto & APPLICATION_PGP) &&
+             (mutt_strncasecmp("pgp:", np->data, 4) == 0))
     {
-      msg->security = mutt_parse_crypt_hdr (cur->data + 4, 0, APPLICATION_PGP);
+      msg->security = mutt_parse_crypt_hdr(np->data + 4, 0, APPLICATION_PGP);
       if (msg->security)
-	msg->security |= APPLICATION_PGP;
-      keep = 0;
+        msg->security |= APPLICATION_PGP;
+      keep = false;
     }
 
-    if (keep)
+    if (!keep)
     {
-      last = &cur->next;
-      cur  = cur->next;
-    }
-    else
-    {
-      tmp       = cur;
-      *last     = cur->next;
-      cur       = cur->next;
-      tmp->next = NULL;
-      mutt_free_list (&tmp);
+      STAILQ_REMOVE(&msg->env->userhdrs, np, ListNode, entries);
+      FREE(&np->data);
+      FREE(&np);
     }
   }
+}
+
+static void label_ref_dec(struct Context *ctx, char *label)
+{
+  struct HashElem *elem = NULL;
+  uintptr_t count;
+
+  elem = hash_find_elem(ctx->label_hash, label);
+  if (!elem)
+    return;
+
+  count = (uintptr_t) elem->data;
+  if (count <= 1)
+  {
+    hash_delete(ctx->label_hash, label, NULL, NULL);
+    return;
+  }
+
+  count--;
+  elem->data = (void *) count;
+}
+
+static void label_ref_inc(struct Context *ctx, char *label)
+{
+  struct HashElem *elem = NULL;
+  uintptr_t count;
+
+  elem = hash_find_elem(ctx->label_hash, label);
+  if (!elem)
+  {
+    count = 1;
+    hash_insert(ctx->label_hash, label, (void *) count);
+    return;
+  }
+
+  count = (uintptr_t) elem->data;
+  count++;
+  elem->data = (void *) count;
 }
 
 /**
- * label_add - Add to a list of all labels
- * @label: Label name to keep
- *
- * Add an item to our LIST of all labels.
- *
- * The keys in the Label HASH must have a longer lifespan than the HASH itself.
- * We keep them in an (inefficient) linked list.
- *
- * Note: We don't check for duplicates.
- *
- * Returns:
- *      NULL  on error
- *      LIST* new LIST item, on success
+ * label_message - add an X-Label: field
  */
-static LIST *label_add (const char *label)
+static int label_message(struct Context *ctx, struct Header *hdr, char *new)
 {
-  if (!label)
-    return NULL;
-
-  LIST *n = mutt_new_list();
-
-  /* Insert our new LIST item at the front */
-  n->data = safe_strdup (label);
-  n->next = LabelList;
-  LabelList = n;
-
-  return n;
-}
-
-/**
- * label_delete - Delete from a list of all labels
- * @label: Label name to remove
- *
- * Delete an item from our LIST of all labels.
- *
- * The keys in the Label HASH must have a longer lifespan than the HASH itself.
- * We keep them in an (inefficient) linked list.
- */
-static void label_delete (const char *label)
-{
-  if (!label || !LabelList)
-    return;
-
-  LIST *l;
-  LIST **prev;
-
-  for (l = LabelList, prev = &LabelList; l; prev = &l->next, l = l->next)
-  {
-    if (mutt_strcmp (label, l->data) == 0)
-    {
-      *prev = l->next;
-      FREE(&l->data);
-      FREE(&l);
-      break;
-    }
-  }
-}
-
-void mutt_label_ref_dec(ENVELOPE *env)
-{
-  uintptr_t count;
-  LIST *label;
-
-  if (!env || !env->labels || !Labels)
-    return;
-
-  for (label = env->labels; label; label = label->next)
-  {
-    if (label->data == NULL)
-      continue;
-
-    count = (uintptr_t)hash_find(Labels, label->data);
-    count--;
-    if (count > 0)
-    {
-      /* Existing label, decrease refcount */
-      hash_set_data (Labels, label->data, (void*) count);
-    }
-    else
-    {
-      /* Old label */
-      hash_delete(Labels, label->data, NULL, NULL);
-      label_delete (label->data);
-    }
-
-    dprint(1, (debugfile, "--label %s: %d\n", label->data, count));
-  }
-}
-
-void mutt_label_ref_inc(ENVELOPE *env)
-{
-  uintptr_t count;
-  LIST *label;
-
-  if (!env || !env->labels || !Labels)
-    return;
-
-  for (label = env->labels; label; label = label->next)
-  {
-    if (label->data == NULL)
-      continue;
-
-    count = (uintptr_t) hash_find(Labels, label->data);
-    count++;
-    if (count > 1)
-    {
-      /* Existing label, increase refcount */
-      hash_set_data (Labels, label->data, (void*) count);
-    }
-    else
-    {
-      /* New label */
-      const char *dup_label = safe_strdup (label->data);
-      label_add (dup_label);
-      hash_insert(Labels, dup_label, (void *) count, 0);
-    }
-
-    dprint(1, (debugfile, "++label %s: %d\n", label->data, count));
-  }
-}
-
-/*
- * set labels on a message
- */
-static int label_message(HEADER *hdr, const char *new)
-{
-  if (hdr == NULL)
+  if (!hdr)
     return 0;
-  if (hdr->env->labels == NULL && new == NULL)
+  if (mutt_strcmp(hdr->env->x_label, new) == 0)
     return 0;
-  if (hdr->env->labels != NULL && new != NULL)
-  {
-    char old[HUGE_STRING];
-    mutt_labels(old, sizeof(old), hdr->env, NULL);
-    if (!strcmp(old, new))
-      return 0;
-  }
 
-  if (hdr->env->labels != NULL)
-  {
-    mutt_label_ref_dec(hdr->env);
-    mutt_free_list(&hdr->env->labels);
-  }
+  if (hdr->env->x_label != NULL)
+    label_ref_dec(ctx, hdr->env->x_label);
+  mutt_str_replace(&hdr->env->x_label, new);
+  if (hdr->env->x_label != NULL)
+    label_ref_inc(ctx, hdr->env->x_label);
 
-  if ((new != NULL) && (*new != '\0'))
-  {
-    char *last, *label;
-    char copy[LONG_STRING];
-
-    /* We take a copy because we're going to alter it */
-    strfcpy (copy, new, sizeof(copy));
-
-    for (label = strtok_r(copy, ",", &last); label;
-         label = strtok_r(NULL, ",", &last)) 
-    {
-      SKIPWS(label);
-      if (mutt_find_list(hdr->env->labels, label))
-        continue;
-      if (hdr->env->labels == NULL)
-      {
-        hdr->env->labels = mutt_new_list();
-        hdr->env->labels->data = safe_strdup(label);
-      }
-      else
-        mutt_add_list(hdr->env->labels, label);
-    }
-    mutt_label_ref_inc(hdr->env);
-  }
-  return hdr->changed = hdr->label_changed = 1;
+  return hdr->changed = hdr->xlabel_changed = true;
 }
 
-int mutt_label_message(HEADER *hdr)
+int mutt_label_message(struct Header *hdr)
 {
-  char buf[LONG_STRING], *new;
+  char buf[LONG_STRING], *new = NULL;
   int i;
   int changed;
 
-  *buf = '\0';
-  if (hdr != NULL && hdr->env->labels != NULL)
-    mutt_labels(buf, sizeof(buf)-2, hdr->env, NULL);
+  if (!Context || !Context->label_hash)
+    return 0;
 
-  /* add a comma-space so that new typing is a new keyword */
-  if (buf[0])
-    strcat(buf, ", ");    /* __STRCAT_CHECKED__ */
+  *buf = '\0';
+  if (hdr != NULL && hdr->env->x_label != NULL)
+  {
+    strfcpy(buf, hdr->env->x_label, sizeof(buf));
+  }
 
   if (mutt_get_field("Label: ", buf, sizeof(buf), MUTT_LABEL /* | MUTT_CLEAR */) != 0)
     return 0;
 
   new = buf;
   SKIPWS(new);
-  if (new && *new)
-  {
-    char *p;
-    int len = strlen(new);
-    p = &new[len]; /* '\0' */
-    while (p > new)
-    {
-      if (!isspace((unsigned char)*(p-1)) && *(p-1) != ',')
-        break;
-      p--;
-    }
-    *p = '\0';
-  }
   if (*new == '\0')
     new = NULL;
 
   changed = 0;
-  if (hdr != NULL) {
-    changed += label_message(hdr, new);
-  } else {
+  if (hdr)
+  {
+    if (label_message(Context, hdr, new))
+    {
+      changed++;
+      mutt_set_header_color(Context, hdr);
+    }
+  }
+  else
+  {
 #define HDR_OF(index) Context->hdrs[Context->v2r[(index)]]
-    for (i = 0; i < Context->vcount; ++i) {
+    for (i = 0; i < Context->vcount; ++i)
+    {
       if (HDR_OF(i)->tagged)
-        if (label_message(HDR_OF(i), new)) {
-          ++changed;
+        if (label_message(Context, HDR_OF(i), new))
+        {
+          changed++;
+          mutt_set_flag(Context, HDR_OF(i), MUTT_TAG, 0);
+          /* mutt_set_flag re-evals the header color */
         }
     }
   }
@@ -443,52 +328,26 @@ int mutt_label_message(HEADER *hdr)
   return changed;
 }
 
-/* scan a context (mailbox) and hash all labels we find */
-void mutt_scan_labels(CONTEXT *ctx)
+void mutt_make_label_hash(struct Context *ctx)
 {
-  int i;
-
-  if (!ctx)
-    return;
-
-  for (i = 0; i < ctx->msgcount; i++)
-    if (ctx->hdrs[i]->env->labels)
-      mutt_label_ref_inc(ctx->hdrs[i]->env);
+  /* 131 is just a rough prime estimate of how many distinct
+   * labels someone might have in a mailbox.
+   */
+  ctx->label_hash = hash_create(131, MUTT_HASH_STRDUP_KEYS);
 }
 
-
-char *mutt_labels(char *dst, int sz, ENVELOPE *env, char *sep)
+void mutt_label_hash_add(struct Context *ctx, struct Header *hdr)
 {
-  static char sbuf[HUGE_STRING];
-  int off = 0;
-  int len;
-  LIST *label;
+  if (!ctx || !ctx->label_hash)
+    return;
+  if (hdr->env->x_label)
+    label_ref_inc(ctx, hdr->env->x_label);
+}
 
-  if (sep == NULL)
-    sep = ", ";
-
-  if (dst == NULL)
-  {
-    dst = sbuf;
-    sz = sizeof(sbuf);
-  }
-
-  *dst = '\0';
-
-  for (label = env->labels; label; label = label->next)
-  {
-    if (label->data == NULL)
-      continue;
-    len = MIN(mutt_strlen(label->data), sz-off);
-    strfcpy(&dst[off], label->data, len+1);
-    off += len;
-    if (label->next)
-    {
-      len = MIN(mutt_strlen(sep), sz-off);
-      strfcpy(&dst[off], sep, len+1);
-      off += len;
-    }
-  }
-
-  return dst;
+void mutt_label_hash_remove(struct Context *ctx, struct Header *hdr)
+{
+  if (!ctx || !ctx->label_hash)
+    return;
+  if (hdr->env->x_label)
+    label_ref_dec(ctx, hdr->env->x_label);
 }
